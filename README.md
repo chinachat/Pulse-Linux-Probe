@@ -16,7 +16,7 @@ Copy this project to `/opt/pulse-probe`, then run:
 
 ```bash
 cd /opt/pulse-probe
-PROBE_ADMIN_PASSWORD='strong-password' ./install-server.sh
+PROBE_ADMIN_PASSWORD='你的后台密码' PROBE_DATA_KEY='独立且足够长的密钥' ./install-server.sh
 ```
 
 It creates and starts a `systemd` service on port 8080. Python 3 is required.
