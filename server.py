@@ -31,6 +31,8 @@ def load_data():
     return json.loads(LEGACY_DATA_FILE.read_text()) if LEGACY_DATA_FILE.exists() else {"keys": [], "nodes": {}}
 
 DATA = load_data()
+DATA.setdefault("revoked_keys", [])
+DATA.setdefault("blocked_nodes", [])
 
 def save_data():
     nonce=secrets.token_bytes(16)
@@ -52,6 +54,8 @@ class App(SimpleHTTPRequestHandler):
         raw = json.dumps(body).encode()
         self.send_response(status); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+    def send_empty(self, status=204):
+        self.send_response(status); self.end_headers()
     def read_json(self):
         try: return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         except (ValueError, json.JSONDecodeError): return None
@@ -93,8 +97,10 @@ class App(SimpleHTTPRequestHandler):
             self.send_header("Set-Cookie",f"probe_session={token}; HttpOnly; SameSite=Strict; Path=/"); self.end_headers(); return self.wfile.write(b'{"ok":true}')
         if path == "/api/report":
             key=self.headers.get("X-API-Key","")
+            if key in DATA["revoked_keys"]: return self.send_empty()
             if key not in [x["key"] for x in DATA["keys"]]: return self.send_json({"error":"invalid key"},401)
             hostname=str(body.get("hostname","unknown"))[:100]; node_id=hashlib.sha256((key+hostname).encode()).hexdigest()[:16]
+            if node_id in DATA["blocked_nodes"]: return self.send_empty()
             body["country"]=str(body.get("country", ""))[:2].upper()
             body["os"]=str(body.get("os", ""))[:120]
             old=DATA["nodes"].get(node_id,{})
@@ -117,10 +123,18 @@ class App(SimpleHTTPRequestHandler):
         if self.path.startswith("/api/admin/nodes/"):
             node_id=self.path.rsplit("/",1)[-1]
             if node_id not in DATA["nodes"]: return self.send_json({"error":"node not found"},404)
-            del DATA["nodes"][node_id]; save_data(); return self.send_json({"ok":True})
+            del DATA["nodes"][node_id]
+            if node_id not in DATA["blocked_nodes"]: DATA["blocked_nodes"].append(node_id)
+            save_data(); return self.send_json({"ok":True})
         if self.path.startswith("/api/admin/keys/"):
-            key_id=self.path.rsplit("/",1)[-1]; DATA["keys"]=[x for x in DATA["keys"] if x["id"]!=key_id]; save_data(); return self.send_json({"ok":True})
+            key_id=self.path.rsplit("/",1)[-1]
+            removed=[x for x in DATA["keys"] if x["id"]==key_id]
+            if not removed: return self.send_json({"error":"key not found"},404)
+            DATA["keys"]=[x for x in DATA["keys"] if x["id"]!=key_id]
+            for item in removed:
+                if item["key"] not in DATA["revoked_keys"]: DATA["revoked_keys"].append(item["key"])
+            save_data(); return self.send_json({"ok":True})
         self.send_json({"error":"not found"},404)
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0",int(os.getenv("PORT","8080"))),App).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0",int(os.getenv("PORT","28080"))),App).serve_forever()
