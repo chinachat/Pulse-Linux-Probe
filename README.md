@@ -1,5 +1,7 @@
 # Pulse Linux Probe
 
+**English | [简体中文](README.zh-CN.md)**
+
 Multi-node Linux monitoring dashboard: a dependency-free Python 3 server, a
 one-line Bash agent installer, and a live web dashboard with masked IPs,
 country flags, resource gauges, and network-rate sparklines.
