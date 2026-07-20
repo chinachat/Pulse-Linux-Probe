@@ -17,6 +17,8 @@ ADMIN_PASSWORD = os.getenv("PROBE_ADMIN_PASSWORD", "change-me")
 DATA_KEY = hashlib.sha256((os.getenv("PROBE_DATA_KEY") or ADMIN_PASSWORD).encode()).digest()
 PUBLIC_URL = os.getenv("PROBE_PUBLIC_URL", "").rstrip("/")
 SESSION_TTL = int(os.getenv("PROBE_SESSION_TTL", str(12 * 3600)))
+OFFLINE_SECONDS = int(os.getenv("PROBE_OFFLINE_SECONDS", "90"))
+HISTORY_LIMIT = 120
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
 STATIC_FILES = {"index.html", "app.js", "style.css", "network.css"}
@@ -119,10 +121,12 @@ class App(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed, path = urlparse(self.path), urlparse(self.path).path
+        if path == "/api/health":
+            return self.send_json({"ok": True, "nodes": len(DATA["nodes"]), "time": time.time()})
         if path == "/api/nodes":
             nodes = []
             for node in DATA["nodes"].values():
-                n = dict(node); n["ip"] = mask_ip(n.get("ip")); n["online"] = time.time() - n.get("updated", 0) < 90
+                n = dict(node); n["ip"] = mask_ip(n.get("ip")); n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
                 nodes.append(n)
             return self.send_json({"nodes": sorted(nodes, key=lambda n: n.get("name", ""))})
         if path == "/api/admin/nodes":
@@ -173,6 +177,7 @@ class App(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "invalid credentials"}, 401)
             LOGIN_FAILURES.pop(ip, None)
             prune_sessions()
+            log.info("login ok for %r from %s", username, ip)
             token = secrets.token_urlsafe(32)
             SESSIONS[token] = now + SESSION_TTL
             secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
@@ -192,16 +197,21 @@ class App(SimpleHTTPRequestHandler):
             with LOCK:
                 old = DATA["nodes"].get(node_id, {})
                 now = time.time()
-                history = (old.get("history", []) + [{"time": now, "rx": body.get("network_rx", 0), "tx": body.get("network_tx", 0)}])[-60:]
+                sample = {"time": now, "rx": body.get("network_rx", 0), "tx": body.get("network_tx", 0),
+                          "cpu": body.get("cpu", 0), "memory": body.get("memory", 0), "disk": body.get("disk", 0)}
+                history = (old.get("history", []) + [sample])[-HISTORY_LIMIT:]
                 edited = {field: old[field] for field in ("name", "country") if old.get(field)}
                 DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "id": node_id, "hostname": hostname, "ip": self.client_address[0], "updated": now}
                 save_data()
+            if not old:
+                log.info("node %s (%s) first reported from %s", node_id, hostname, self.client_address[0])
             return self.send_json({"ok": True, "id": node_id})
         if not self.require_admin(): return
         if path == "/api/admin/keys":
             item = {"id": secrets.token_hex(6), "label": str(body.get("label", "New key"))[:60], "key": "lp_" + secrets.token_urlsafe(24), "created": time.time()}
             with LOCK:
                 DATA["keys"].append(item); save_data()
+            log.info("api key %s created (label %r)", item["id"], item["label"])
             return self.send_json(item, 201)
         if path == "/api/admin/nodes":
             with LOCK:
@@ -226,6 +236,7 @@ class App(SimpleHTTPRequestHandler):
                     if node_id not in DATA["blocked_nodes"]: DATA["blocked_nodes"].append(node_id)
                     save_data()
             if not node: return self.send_json({"error": "node not found"}, 404)
+            log.info("node %s deleted and blocked", node_id)
             return self.send_json({"ok": True})
         if self.path.startswith("/api/admin/keys/"):
             key_id = self.path.rsplit("/", 1)[-1]
@@ -237,8 +248,11 @@ class App(SimpleHTTPRequestHandler):
                         if item["key"] not in DATA["revoked_keys"]: DATA["revoked_keys"].append(item["key"])
                     save_data()
             if not removed: return self.send_json({"error": "key not found"}, 404)
+            log.info("api key %s revoked", key_id)
             return self.send_json({"ok": True})
         self.send_json({"error": "not found"}, 404)
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), App).serve_forever()
+    port = int(os.getenv("PORT", "8080"))
+    log.info("pulse-probe listening on 0.0.0.0:%d", port)
+    ThreadingHTTPServer(("0.0.0.0", port), App).serve_forever()
