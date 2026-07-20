@@ -60,7 +60,9 @@ def save_data():
     nonce = secrets.token_bytes(16)
     cipher = crypt(json.dumps(DATA, separators=(",", ":")).encode(), nonce)
     tag = hmac.new(DATA_KEY, nonce + cipher, hashlib.sha256).digest()
-    DATA_FILE.write_bytes(base64.b64encode(nonce + tag + cipher))
+    tmp = DATA_FILE.with_suffix(".tmp")
+    tmp.write_bytes(base64.b64encode(nonce + tag + cipher))
+    os.replace(tmp, DATA_FILE)  # atomic rename; a crash cannot corrupt data.enc
 
 def mask_ip(ip):
     if not ip: return "hidden"
@@ -239,4 +241,4 @@ class App(SimpleHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
 if __name__ == "__main__":
-    ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "28080"))), App).serve_forever()
+    ThreadingHTTPServer(("0.0.0.0", int(os.getenv("PORT", "8080"))), App).serve_forever()
