@@ -10,7 +10,7 @@ country flags, resource gauges, and network-rate sparklines.
 
 - CPU / memory / disk gauges plus per-node network-rate history (120 samples)
 - Encrypted-at-rest data file (SHA-256 keystream + HMAC-SHA256 integrity) with atomic writes
-- API-key reporting with revoke and node blocking
+- API-key reporting with revoke and node blocking (blocked nodes can be listed and unblocked)
 - Admin console: key management, node rename/location override, one-line client installer
 - Hardened by default: static-file whitelist, constant-time credential checks,
   login rate limiting, expiring sessions, security headers, event logging
@@ -74,7 +74,8 @@ saved country code in Admin takes precedence.
 | `POST /api/report` | `X-API-Key` | Agent report |
 | `POST /api/login` / `POST /api/logout` | none | Admin session |
 | `GET/POST /api/admin/keys`, `DELETE /api/admin/keys/{id}` | session | Key management |
-| `GET/POST /api/admin/nodes`, `DELETE /api/admin/nodes/{id}` | session | Node management |
+| `GET/POST /api/admin/nodes`, `DELETE /api/admin/nodes/{id}` | session | Node management (delete also blocks) |
+| `GET /api/admin/blocked`, `POST /api/admin/unblock` | session | List / unblock blocked nodes |
 | `GET /api/install.sh?key=...` | session | Generated agent installer |
 
 ## Development

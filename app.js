@@ -89,6 +89,7 @@ $('#login-btn').onclick = async () => {
     await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) });
     $('#password').value = '';
     $('#login').hidden = true; $('#manage').hidden = false;
+    lastAdminSig = '';
     loadAdmin();
   } catch (e) { alert(e.message); }
 };
@@ -99,10 +100,17 @@ $('#logout').onclick = async () => {
 
 // Render admin rows with DOM APIs only - never interpolate server data into
 // innerHTML, otherwise a hostile hostname/label could inject markup (XSS).
+let lastAdminSig = '';
 async function loadAdmin() {
-  const [keys, nodes] = await Promise.all([api('/api/admin/keys'), api('/api/admin/nodes')]);
+  const [keys, nodes, blocked] = await Promise.all([
+    api('/api/admin/keys'), api('/api/admin/nodes'), api('/api/admin/blocked'),
+  ]);
+  const sig = JSON.stringify([keys, nodes, blocked]);
+  if (sig === lastAdminSig) return;  // 数据没变化不重绘，避免打断正在编辑的输入
+  lastAdminSig = sig;
   renderKeys(keys.keys);
   renderAdminNodes(nodes.nodes);
+  renderBlocked(blocked.blocked);
 }
 function renderKeys(keys) {
   const k = $('#keys');
@@ -157,12 +165,38 @@ function renderAdminNodes(nodes) {
     const del = document.createElement('button');
     del.textContent = '删除节点';
     del.onclick = async () => {
-      if (confirm('确定删除该节点吗？')) {
+      if (confirm('确定删除该节点吗？删除后其上报将被封禁，可在下方“已封禁节点”中解封。')) {
         await api('/api/admin/nodes/' + x.id, { method: 'DELETE' });
         refresh(); loadAdmin();
       }
     };
     row.append(name, country, save, del);
+    n.append(row);
+  });
+}
+function renderBlocked(blocked) {
+  const n = $('#blocked-nodes');
+  n.innerHTML = '';
+  if (!blocked.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = '暂无被封禁的节点';
+    n.append(p);
+    return;
+  }
+  blocked.forEach(x => {
+    const row = document.createElement('div');
+    row.className = 'edit-node';
+    const info = document.createElement('span');
+    info.className = 'blocked-info';
+    info.textContent = (x.name || x.hostname || x.id) + (x.name && x.hostname ? `（${x.hostname}）` : '');
+    const un = document.createElement('button');
+    un.textContent = '解封';
+    un.onclick = async () => {
+      await api('/api/admin/unblock', { method: 'POST', body: JSON.stringify({ id: x.id }) });
+      loadAdmin();
+    };
+    row.append(info, un);
     n.append(row);
   });
 }
@@ -175,7 +209,10 @@ $('#new-key').onclick = async () => {
 };
 refresh();
 setInterval(refresh, 5000);
-// 管理后台打开期间每 10 秒自动刷新密钥与节点列表（新上报的节点会及时出现）
+// 管理后台打开期间每 10 秒自动刷新密钥与节点列表；
+// 正在编辑（光标停在任意输入框）时跳过本次刷新，避免冲掉输入内容
 setInterval(() => {
-  if (!$('#admin-panel').hidden && !$('#manage').hidden) loadAdmin().catch(() => {});
+  const a = document.activeElement;
+  const editing = a && a.tagName === 'INPUT' && $('#manage').contains(a);
+  if (!$('#admin-panel').hidden && !$('#manage').hidden && !editing) loadAdmin().catch(() => {});
 }, 10000);

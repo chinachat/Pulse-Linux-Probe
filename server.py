@@ -58,6 +58,11 @@ def load_data():
 DATA = load_data()
 DATA.setdefault("revoked_keys", [])
 DATA.setdefault("blocked_nodes", [])
+# migrate legacy entries (plain id strings) to dicts with metadata
+DATA["blocked_nodes"] = [b if isinstance(b, dict) else {"id": str(b)} for b in DATA["blocked_nodes"]]
+
+def blocked_ids():
+    return {b.get("id") for b in DATA["blocked_nodes"]}
 
 def save_data():
     nonce = secrets.token_bytes(16)
@@ -147,6 +152,9 @@ class App(SimpleHTTPRequestHandler):
         if path == "/api/admin/keys":
             if self.require_admin(): self.send_json({"keys": DATA["keys"]})
             return
+        if path == "/api/admin/blocked":
+            if self.require_admin(): self.send_json({"blocked": DATA["blocked_nodes"]})
+            return
         if path == "/api/install.sh":
             if not self.require_admin(): return
             key = parse_qs(parsed.query).get("key", [""])[0]
@@ -199,11 +207,15 @@ class App(SimpleHTTPRequestHandler):
             return self.wfile.write(b'{"ok":true}')
         if path == "/api/report":
             key = self.headers.get("X-API-Key", "")
-            if key in DATA["revoked_keys"]: return self.send_empty()
+            if key in DATA["revoked_keys"]:
+                log.warning("report dropped: revoked key %s... from %s", key[:8], self.client_ip())
+                return self.send_empty()
             if key not in [x["key"] for x in DATA["keys"]]: return self.send_json({"error": "invalid key"}, 401)
             hostname = str(body.get("hostname", "unknown"))[:100]
             node_id = hashlib.sha256((key + hostname).encode()).hexdigest()[:16]
-            if node_id in DATA["blocked_nodes"]: return self.send_empty()
+            if node_id in blocked_ids():
+                log.info("report dropped: blocked node %s (%s) from %s", node_id, hostname, self.client_ip())
+                return self.send_empty()
             body["country"] = str(body.get("country", ""))[:2].upper()
             body["os"] = str(body.get("os", ""))[:120]
             ip = self.client_ip()
@@ -235,6 +247,17 @@ class App(SimpleHTTPRequestHandler):
                     save_data()
             if not node: return self.send_json({"error": "node not found"}, 404)
             return self.send_json(node)
+        if path == "/api/admin/unblock":
+            node_id = str(body.get("id", ""))
+            with LOCK:
+                before = len(DATA["blocked_nodes"])
+                DATA["blocked_nodes"] = [b for b in DATA["blocked_nodes"] if b.get("id") != node_id]
+                if len(DATA["blocked_nodes"]) < before:
+                    save_data()
+            if len(DATA["blocked_nodes"]) == before:
+                return self.send_json({"error": "node not blocked"}, 404)
+            log.info("node %s unblocked", node_id)
+            return self.send_json({"ok": True})
         return self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
@@ -246,7 +269,9 @@ class App(SimpleHTTPRequestHandler):
                     node = None
                 else:
                     node = DATA["nodes"].pop(node_id)
-                    if node_id not in DATA["blocked_nodes"]: DATA["blocked_nodes"].append(node_id)
+                    if node_id not in blocked_ids():
+                        DATA["blocked_nodes"].append({"id": node_id, "hostname": node.get("hostname", ""),
+                                                      "name": node.get("name", ""), "time": time.time()})
                     save_data()
             if not node: return self.send_json({"error": "node not found"}, 404)
             log.info("node %s deleted and blocked", node_id)

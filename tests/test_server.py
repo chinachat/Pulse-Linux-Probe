@@ -182,6 +182,38 @@ class ServerTest(unittest.TestCase):
         node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
         self.assertEqual(node["ip"], "203.0.*.*")
 
+    def test_14_block_and_unblock(self):
+        status, _, raw = http(self.base, "POST", "/api/admin/keys",
+                              {"label": "blk"}, {"Cookie": self.cookie})
+        self.assertEqual(status, 201)
+        key = json.loads(raw)["key"]
+        payload = {"hostname": "block-node", "cpu": 1, "memory": 1, "disk": 1}
+        status, _, raw = http(self.base, "POST", "/api/report", payload,
+                              {"X-API-Key": key})
+        self.assertEqual(status, 200)
+        node_id = json.loads(raw)["id"]
+        # deleting the node blocks it, with metadata kept for the admin list
+        status, _, _ = http(self.base, "DELETE",
+                            "/api/admin/nodes/" + node_id, headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        status, _, raw = http(self.base, "GET", "/api/admin/blocked",
+                              headers={"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        blocked = {b["id"]: b for b in json.loads(raw)["blocked"]}
+        self.assertIn(node_id, blocked)
+        self.assertEqual(blocked[node_id]["hostname"], "block-node")
+        # reports from a blocked node are dropped silently
+        status, _, _ = http(self.base, "POST", "/api/report", payload,
+                            {"X-API-Key": key})
+        self.assertEqual(status, 204)
+        # after unblocking, the node can report again
+        status, _, _ = http(self.base, "POST", "/api/admin/unblock",
+                            {"id": node_id}, {"Cookie": self.cookie})
+        self.assertEqual(status, 200)
+        status, _, _ = http(self.base, "POST", "/api/report", payload,
+                            {"X-API-Key": key})
+        self.assertEqual(status, 200)
+
     def test_99_login_rate_limit(self):
         for _ in range(5):
             status, _ = self.login("nope")
