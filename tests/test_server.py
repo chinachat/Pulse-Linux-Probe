@@ -40,7 +40,8 @@ class ServerTest(unittest.TestCase):
         for name in ("server.py", "index.html", "agent.sh"):
             shutil.copy(ROOT / name, cls.tmp / name)
         env = dict(os.environ, PORT=str(cls.PORT),
-                   PROBE_ADMIN_PASSWORD="test-pass", PROBE_DATA_KEY="test-data-key")
+                   PROBE_ADMIN_PASSWORD="test-pass", PROBE_DATA_KEY="test-data-key",
+                   PROBE_TRUST_PROXY="1")
         cls.proc = subprocess.Popen([sys.executable, str(cls.tmp / "server.py")],
                                     cwd=cls.tmp, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -165,6 +166,21 @@ class ServerTest(unittest.TestCase):
         status, _, _ = http(self.base, "GET", "/api/admin/keys",
                             headers={"Cookie": cookie})
         self.assertEqual(status, 401)
+
+    def test_13_x_forwarded_for(self):
+        # PROBE_TRUST_PROXY=1 is set in setUpClass: the node IP must come
+        # from the first X-Forwarded-For entry, not the TCP peer.
+        status, _, raw = http(self.base, "POST", "/api/admin/keys",
+                              {"label": "xff"}, {"Cookie": self.cookie})
+        self.assertEqual(status, 201)
+        key = json.loads(raw)["key"]
+        payload = {"hostname": "xff-node", "cpu": 1, "memory": 1, "disk": 1}
+        status, _, _ = http(self.base, "POST", "/api/report", payload,
+                            {"X-API-Key": key, "X-Forwarded-For": "203.0.113.7, 10.0.0.1"})
+        self.assertEqual(status, 200)
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
+        self.assertEqual(node["ip"], "203.0.*.*")
 
     def test_99_login_rate_limit(self):
         for _ in range(5):
