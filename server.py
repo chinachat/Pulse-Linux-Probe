@@ -21,7 +21,7 @@ OFFLINE_SECONDS = int(os.getenv("PROBE_OFFLINE_SECONDS", "90"))
 HISTORY_LIMIT = 120
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
-STATIC_FILES = {"index.html", "app.js", "style.css", "network.css"}
+STATIC_FILES = {"index.html", "app.js", "style.css"}
 HOST_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?")
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

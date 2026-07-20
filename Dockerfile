@@ -1,7 +1,7 @@
 FROM python:3.12-alpine
 
 WORKDIR /app
-COPY server.py index.html app.js style.css network.css agent.sh ./
+COPY server.py index.html app.js style.css agent.sh ./
 
 ENV PORT=8080 \
     PROBE_DATA_DIR=/data
