@@ -1,0 +1,15 @@
+services:
+  pulse-probe:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PROBE_ADMIN_PASSWORD: ${PROBE_ADMIN_PASSWORD:?Set PROBE_ADMIN_PASSWORD in .env or the environment}
+      PROBE_DATA_KEY: ${PROBE_DATA_KEY:-}
+      # PROBE_PUBLIC_URL: https://probe.example.com
+    volumes:
+      - probe-data:/data
+    restart: unless-stopped
+
+volumes:
+  probe-data:
