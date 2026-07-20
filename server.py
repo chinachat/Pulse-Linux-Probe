@@ -18,6 +18,7 @@ DATA_KEY = hashlib.sha256((os.getenv("PROBE_DATA_KEY") or ADMIN_PASSWORD).encode
 PUBLIC_URL = os.getenv("PROBE_PUBLIC_URL", "").rstrip("/")
 SESSION_TTL = int(os.getenv("PROBE_SESSION_TTL", str(12 * 3600)))
 OFFLINE_SECONDS = int(os.getenv("PROBE_OFFLINE_SECONDS", "90"))
+TRUST_PROXY = bool(os.getenv("PROBE_TRUST_PROXY"))
 HISTORY_LIMIT = 120
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
@@ -104,6 +105,17 @@ class App(SimpleHTTPRequestHandler):
         c = SimpleCookie(self.headers.get("Cookie"))
         morsel = c.get("probe_session")
         return morsel.value if morsel else None
+
+    def client_ip(self):
+        # Behind a reverse proxy the TCP peer is the proxy itself; only trust
+        # forwarded headers when PROBE_TRUST_PROXY is explicitly enabled,
+        # otherwise anyone could spoof their displayed IP.
+        if TRUST_PROXY:
+            xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            if xff: return xff
+            xri = self.headers.get("X-Real-IP", "").strip()
+            if xri: return xri
+        return self.client_address[0]
 
     def is_admin(self):
         token = self.session_token()
@@ -194,6 +206,7 @@ class App(SimpleHTTPRequestHandler):
             if node_id in DATA["blocked_nodes"]: return self.send_empty()
             body["country"] = str(body.get("country", ""))[:2].upper()
             body["os"] = str(body.get("os", ""))[:120]
+            ip = self.client_ip()
             with LOCK:
                 old = DATA["nodes"].get(node_id, {})
                 now = time.time()
@@ -201,10 +214,10 @@ class App(SimpleHTTPRequestHandler):
                           "cpu": body.get("cpu", 0), "memory": body.get("memory", 0), "disk": body.get("disk", 0)}
                 history = (old.get("history", []) + [sample])[-HISTORY_LIMIT:]
                 edited = {field: old[field] for field in ("name", "country") if old.get(field)}
-                DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "id": node_id, "hostname": hostname, "ip": self.client_address[0], "updated": now}
+                DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "id": node_id, "hostname": hostname, "ip": ip, "updated": now}
                 save_data()
             if not old:
-                log.info("node %s (%s) first reported from %s", node_id, hostname, self.client_address[0])
+                log.info("node %s (%s) first reported from %s", node_id, hostname, ip)
             return self.send_json({"ok": True, "id": node_id})
         if not self.require_admin(): return
         if path == "/api/admin/keys":
