@@ -152,6 +152,7 @@ function renderAdminNodes(nodes) {
     save.onclick = async () => {
       await api('/api/admin/nodes', { method: 'POST', body: JSON.stringify({ id: x.id, name: name.value, country: country.value }) });
       refresh();
+      loadAdmin();  // 后台列表同步刷新，不然改名/归属地看起来没生效
     };
     const del = document.createElement('button');
     del.textContent = '删除节点';
@@ -174,3 +175,7 @@ $('#new-key').onclick = async () => {
 };
 refresh();
 setInterval(refresh, 5000);
+// 管理后台打开期间每 10 秒自动刷新密钥与节点列表（新上报的节点会及时出现）
+setInterval(() => {
+  if (!$('#admin-panel').hidden && !$('#manage').hidden) loadAdmin().catch(() => {});
+}, 10000);
