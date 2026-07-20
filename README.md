@@ -56,6 +56,7 @@ It creates and starts a `pulse-probe.service` on port 8080. Python 3 is required
 | `PROBE_SESSION_TTL` | `43200` | Admin session lifetime in seconds |
 | `PROBE_OFFLINE_SECONDS` | `90` | Node is shown offline after this many seconds without a report |
 | `PROBE_REQUIRE_SET_PASSWORD` | unset | If set, the server refuses to start with the default password |
+| `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for node IPs (enable only behind a reverse proxy that sets them) |
 
 ## Client
 
@@ -92,6 +93,10 @@ and ShellCheck over the shell scripts. The workflow file lives in
   before exposing the server; set `PROBE_REQUIRE_SET_PASSWORD=1` to fail closed.
 - Put the server behind HTTPS (reverse proxy) for public deployments and set
   `PROBE_PUBLIC_URL` to the external URL so install scripts reference it.
+- Behind a reverse proxy, also forward the real client address
+  (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` on
+  nginx/openresty) and set `PROBE_TRUST_PROXY=1`, otherwise every node shows
+  the proxy's own IP.
 - Static file serving is whitelisted; `data.enc` and server sources are not
   served over HTTP.
 - Login attempts are rate limited per IP (5 failures / 5 minutes).
