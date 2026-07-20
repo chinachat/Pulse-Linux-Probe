@@ -6,12 +6,9 @@ function countryFlag(code) {
   const cc = (code || '').toUpperCase();
   return /^[A-Z]{2}$/.test(cc) ? `<img src="https://flagcdn.com/w40/${cc.toLowerCase()}.png" width="20" height="15" alt="${cc}"> ${cc}` : '未知';
 }
-function rate(value) {
-  let n = Number(value) || 0;
-  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
-  let i = 0;
-  while (n >= 1024 && i < 3) { n /= 1024; i++; }
-  return (n >= 10 ? n.toFixed(0) : n.toFixed(1)) + ' ' + units[i];
+function mbps(value) {
+  const n = (Number(value) || 0) * 8 / 1e6;  // bytes/s -> megabits/s
+  return (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)) + ' Mbps';
 }
 function networkChart(canvas, history = [], current = {}) {
   const w = 270, h = 56, d = devicePixelRatio || 1, c = canvas.getContext('2d');
@@ -56,14 +53,16 @@ function render(nodes) {
   nodes.forEach(n => {
     const e = $('#node-card').content.cloneNode(true);
     const ms = [n.cpu, n.memory, n.disk];
+    // 标题行：状态点 + 主机名 + 国旗 + IP 一排展示
     e.querySelector('strong').textContent = n.name || '未命名节点';
+    e.querySelector('.loc').innerHTML = countryFlag(n.country);
+    e.querySelector('.ip').textContent = n.ip;
     e.querySelector('i').className = n.online ? '' : 'offline';
     e.querySelector('.status').textContent = n.online ? '在线' : '离线';
-    e.querySelector('.ip').textContent = 'IP ' + n.ip;
-    e.querySelector('.loc').innerHTML = countryFlag(n.country);
     e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.net').textContent = '网络 ' + rate(n.network_rx) + ' ↓ / ' + rate(n.network_tx) + ' ↑';
+    // 网络区块：实时速率（Mbps）与动态图表放在一起
+    e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     e.querySelectorAll('.metrics div').forEach((x, i) => {
       gauge(x.querySelector('canvas'), ms[i] || 0);
       x.querySelector('b').textContent = (ms[i] || 0) + '%';
