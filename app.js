@@ -81,12 +81,15 @@ function render(nodes) {
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
     // 网络区块：实时速率（Mbps）与动态图表放在一起
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
-    e.querySelectorAll('.metrics div').forEach((x, i) => {
+    // canvas 必须先挂载到文档再绘制：在未挂载的 fragment 上浏览器无法解析
+    // 字体（font 赋值被忽略、measureText 返回 0），图表上的文字刻度会全部丢失
+    box.append(e);
+    const card = box.lastElementChild;
+    card.querySelectorAll('.metrics div').forEach((x, i) => {
       gauge(x.querySelector('canvas'), ms[i] || 0);
       x.querySelector('b').textContent = (ms[i] || 0) + '%';
     });
-    networkChart(e.querySelector('.network-chart canvas'), n.history, n);
-    box.append(e);
+    networkChart(card.querySelector('.network-chart canvas'), n.history, n);
   });
 }
 async function refresh() {
