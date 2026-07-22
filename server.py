@@ -58,11 +58,16 @@ def load_data():
 DATA = load_data()
 DATA.setdefault("revoked_keys", [])
 DATA.setdefault("blocked_nodes", [])
+DATA.setdefault("settings", {})
 # migrate legacy entries (plain id strings) to dicts with metadata
 DATA["blocked_nodes"] = [b if isinstance(b, dict) else {"id": str(b)} for b in DATA["blocked_nodes"]]
 
 def blocked_ids():
     return {b.get("id") for b in DATA["blocked_nodes"]}
+
+def admin_user():
+    # UI-changed username (persisted) wins; the env var is the initial default
+    return DATA["settings"].get("admin_user") or ADMIN_USER
 
 def save_data():
     nonce = secrets.token_bytes(16)
@@ -155,6 +160,9 @@ class App(SimpleHTTPRequestHandler):
         if path == "/api/admin/blocked":
             if self.require_admin(): self.send_json({"blocked": DATA["blocked_nodes"]})
             return
+        if path == "/api/admin/settings":
+            if self.require_admin(): self.send_json({"admin_user": admin_user()})
+            return
         if path == "/api/install.sh":
             if not self.require_admin(): return
             key = parse_qs(parsed.query).get("key", [""])[0]
@@ -190,7 +198,7 @@ class App(SimpleHTTPRequestHandler):
                 log.warning("login rate-limited for %s", ip)
                 return self.send_json({"error": "too many attempts, try again later"}, 429)
             username, password = str(body.get("username", "")), str(body.get("password", ""))
-            if not (hmac.compare_digest(username.encode(), ADMIN_USER.encode())
+            if not (hmac.compare_digest(username.encode(), admin_user().encode())
                     and hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())):
                 fails.append(now); LOGIN_FAILURES[ip] = fails
                 log.warning("login failed for user %r from %s", username, ip)
@@ -258,6 +266,15 @@ class App(SimpleHTTPRequestHandler):
                 return self.send_json({"error": "node not blocked"}, 404)
             log.info("node %s unblocked", node_id)
             return self.send_json({"ok": True})
+        if path == "/api/admin/settings":
+            name = str(body.get("admin_user", "")).strip()
+            if not (1 <= len(name) <= 60):
+                return self.send_json({"error": "username must be 1-60 chars"}, 400)
+            with LOCK:
+                DATA["settings"]["admin_user"] = name
+                save_data()
+            log.info("admin username changed to %r", name)
+            return self.send_json({"ok": True, "admin_user": name})
         return self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
