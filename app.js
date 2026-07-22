@@ -120,15 +120,16 @@ $('#logout').onclick = async () => {
 // innerHTML, otherwise a hostile hostname/label could inject markup (XSS).
 let lastAdminSig = '';
 async function loadAdmin() {
-  const [keys, nodes, blocked] = await Promise.all([
-    api('/api/admin/keys'), api('/api/admin/nodes'), api('/api/admin/blocked'),
+  const [keys, nodes, blocked, settings] = await Promise.all([
+    api('/api/admin/keys'), api('/api/admin/nodes'), api('/api/admin/blocked'), api('/api/admin/settings'),
   ]);
-  const sig = JSON.stringify([keys, nodes, blocked]);
+  const sig = JSON.stringify([keys, nodes, blocked, settings]);
   if (sig === lastAdminSig) return;  // 数据没变化不重绘，避免打断正在编辑的输入
   lastAdminSig = sig;
   renderKeys(keys.keys);
   renderAdminNodes(nodes.nodes);
   renderBlocked(blocked.blocked);
+  renderSettings(settings);
 }
 function renderKeys(keys) {
   const k = $('#keys');
@@ -218,10 +219,21 @@ function renderBlocked(blocked) {
     n.append(row);
   });
 }
+function renderSettings(s) {
+  // 光标正停在用户名输入框时跳过赋值，避免自动刷新冲掉正在输入的新用户名
+  if (document.activeElement !== $('#admin-user')) $('#admin-user').value = s.admin_user || '';
+}
 $('#new-key').onclick = async () => {
   try {
     await api('/api/admin/keys', { method: 'POST', body: JSON.stringify({ label: $('#key-label').value || '新密钥' }) });
     $('#key-label').value = '';
+    loadAdmin();
+  } catch (e) { alert(e.message); }
+};
+$('#save-user').onclick = async () => {
+  try {
+    await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ admin_user: $('#admin-user').value.trim() }) });
+    alert('管理员用户名已更新，下次登录请使用新用户名');
     loadAdmin();
   } catch (e) { alert(e.message); }
 };
