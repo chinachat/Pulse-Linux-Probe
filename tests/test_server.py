@@ -189,7 +189,7 @@ class ServerTest(unittest.TestCase):
         key = json.loads(raw)["key"]
         payload = {"hostname": "block-node", "cpu": 1, "memory": 1, "disk": 1}
         status, _, raw = http(self.base, "POST", "/api/report", payload,
-                              {"X-API-Key": key})
+                            {"X-API-Key": key})
         self.assertEqual(status, 200)
         node_id = json.loads(raw)["id"]
         # deleting the node blocks it, with metadata kept for the admin list
@@ -212,6 +212,36 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         status, _, _ = http(self.base, "POST", "/api/report", payload,
                             {"X-API-Key": key})
+        self.assertEqual(status, 200)
+
+    def test_15_change_admin_username(self):
+        status, cookie = self.login()
+        self.assertEqual(status, 200)
+        # settings endpoint reports the current admin username
+        status, _, raw = http(self.base, "GET", "/api/admin/settings",
+                              headers={"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["admin_user"], "admin")
+        # empty / overlong names are rejected
+        for bad in ("", "x" * 61):
+            status, _, _ = http(self.base, "POST", "/api/admin/settings",
+                                {"admin_user": bad}, {"Cookie": cookie})
+            self.assertEqual(status, 400, repr(bad))
+        # change to a new username
+        status, _, raw = http(self.base, "POST", "/api/admin/settings",
+                              {"admin_user": "root-admin"}, {"Cookie": cookie})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["admin_user"], "root-admin")
+        # the old username no longer works
+        status, _ = self.login()
+        self.assertEqual(status, 401)
+        # the new username works (a success also clears the rate-limit counter)
+        status, _, _ = http(self.base, "POST", "/api/login",
+                            {"username": "root-admin", "password": "test-pass"})
+        self.assertEqual(status, 200)
+        # restore the default for the remaining tests
+        status, _, _ = http(self.base, "POST", "/api/admin/settings",
+                            {"admin_user": "admin"}, {"Cookie": cookie})
         self.assertEqual(status, 200)
 
     def test_99_login_rate_limit(self):

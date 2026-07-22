@@ -11,7 +11,7 @@ country flags, resource gauges, and network-rate sparklines.
 - CPU / memory / disk gauges plus per-node network-rate history (120 samples)
 - Encrypted-at-rest data file (SHA-256 keystream + HMAC-SHA256 integrity) with atomic writes
 - API-key reporting with revoke and node blocking (blocked nodes can be listed and unblocked)
-- Admin console: key management, node rename/location override, one-line client installer
+- Admin console: key management, node rename/location override, admin username change, one-line client installer
 - Hardened by default: static-file whitelist, constant-time credential checks,
   login rate limiting, expiring sessions, security headers, event logging
 
@@ -48,7 +48,7 @@ It creates and starts a `pulse-probe.service` on port 8080. Python 3 is required
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `8080` | Listen port |
-| `PROBE_ADMIN_USER` | `admin` | Admin username |
+| `PROBE_ADMIN_USER` | `admin` | Initial admin username (a username saved in the admin console takes precedence) |
 | `PROBE_ADMIN_PASSWORD` | `change-me` | Admin password (**set this!**) |
 | `PROBE_DATA_KEY` | derived from admin password | Encryption key for `data.enc` |
 | `PROBE_DATA_DIR` | project directory | Where `data.enc` is stored |
@@ -76,6 +76,7 @@ saved country code in Admin takes precedence.
 | `GET/POST /api/admin/keys`, `DELETE /api/admin/keys/{id}` | session | Key management |
 | `GET/POST /api/admin/nodes`, `DELETE /api/admin/nodes/{id}` | session | Node management (delete also blocks) |
 | `GET /api/admin/blocked`, `POST /api/admin/unblock` | session | List / unblock blocked nodes |
+| `GET/POST /api/admin/settings` | session | Admin account settings (change username) |
 | `GET /api/install.sh?key=...` | session | Generated agent installer |
 
 ## Development
