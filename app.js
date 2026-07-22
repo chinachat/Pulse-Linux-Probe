@@ -6,30 +6,48 @@ function countryFlag(code) {
   const cc = (code || '').toUpperCase();
   return /^[A-Z]{2}$/.test(cc) ? `<img src="https://flagcdn.com/w40/${cc.toLowerCase()}.png" width="20" height="15" alt="${cc}"> ${cc}` : '未知';
 }
-function mbps(value) {
+function mbpsNum(value) {
   const n = (Number(value) || 0) * 8 / 1e6;  // bytes/s -> megabits/s
-  return (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)) + ' Mbps';
+  return n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
 }
+function mbps(value) { return mbpsNum(value) + ' Mbps'; }
+
 function networkChart(canvas, history = [], current = {}) {
-  const w = 270, h = 56, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const w = 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   canvas.width = w * d; canvas.height = h * d; c.scale(d, d);
+  const cs = getComputedStyle(document.body);
+  const muted = cs.getPropertyValue('--muted'), grid = cs.getPropertyValue('--line');
   let samples = history.slice(-30);
   if (!samples.length) samples = [{ rx: current.network_rx || 0, tx: current.network_tx || 0 }];
   const peak = Math.max(1, ...samples.flatMap(x => [Number(x.rx) || 0, Number(x.tx) || 0]));
-  c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
-  c.beginPath(); c.moveTo(0, h - 2); c.lineTo(w, h - 2); c.stroke();
-  [['rx', '#38bdf8'], ['tx', '#10b981']].forEach(([key, color]) => {
+  const pw = w - ml;
+  const px = i => ml + (samples.length > 1 ? i * pw / (samples.length - 1) : pw / 2);
+  const py = v => h - (Number(v) || 0) / peak * (h - 18) - 6;
+  // Y 轴刻度：峰值实线 + 半峰虚线，数字单位 Mbps
+  c.font = "9px 'DM Mono', monospace";
+  [[1, []], [0.5, [3, 3]]].forEach(([f, dash]) => {
+    c.strokeStyle = grid; c.setLineDash(dash);
+    c.beginPath(); c.moveTo(ml, py(peak * f)); c.lineTo(w, py(peak * f)); c.stroke();
+    c.setLineDash([]);
+    c.fillStyle = muted; c.fillText(mbpsNum(peak * f), 0, py(peak * f) + 3);
+  });
+  // 基线
+  c.strokeStyle = grid;
+  c.beginPath(); c.moveTo(ml, h - 4); c.lineTo(w, h - 4); c.stroke();
+  // 曲线 + 末端圆点 + 当前值标注（rx 标在上方，tx 标在下方，避免重叠）
+  [['rx', '#38bdf8', -7], ['tx', '#10b981', 14]].forEach(([key, color, dy]) => {
     c.beginPath();
-    samples.forEach((x, i) => {
-      const px = samples.length > 1 ? i * w / (samples.length - 1) : w / 2;
-      const py = h - (Number(x[key]) || 0) / peak * (h - 8) - 4;
-      i ? c.lineTo(px, py) : c.moveTo(px, py);
-    });
+    samples.forEach((x, i) => { i ? c.lineTo(px(i), py(x[key])) : c.moveTo(px(0), py(x[key])); });
     c.strokeStyle = color; c.lineWidth = 2; c.stroke();
     const last = samples[samples.length - 1];
-    const y = h - (Number(last[key]) || 0) / peak * (h - 8) - 4;
-    c.fillStyle = color; c.beginPath();
-    c.arc(samples.length > 1 ? w : w / 2, y, 3, 0, Math.PI * 2); c.fill();
+    const lx = px(samples.length - 1), ly = py(last[key]);
+    c.fillStyle = color;
+    c.beginPath(); c.arc(lx, ly, 3, 0, Math.PI * 2); c.fill();
+    const label = mbpsNum(last[key]);
+    c.font = "10px 'DM Mono', monospace";
+    const tx = Math.max(ml, lx - c.measureText(label).width - 6);
+    const ty = Math.min(Math.max(ly + dy, 9), h - 2);
+    c.fillText(label, tx, ty);
   });
 }
 function duration(s) {
