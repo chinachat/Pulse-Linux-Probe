@@ -160,11 +160,6 @@ $('#theme').onclick = () => {
   $('#theme').textContent = document.body.classList.contains('dark') ? '浅色' : '深色';
   if (_lastNodes) render(_lastNodes);
 };
-$('#layout').onclick = () => {
-  $('#nodes').classList.toggle('list');
-  _lastNodesSig = '';
-  refresh();
-};
 $('#admin').onclick = () => { $('#dashboard').hidden = true; $('#admin-panel').hidden = false; };
 $('#back').onclick = () => { $('#dashboard').hidden = false; $('#admin-panel').hidden = true; };
 
@@ -213,23 +208,37 @@ function renderKeys(keys) {
     const editBtn = document.createElement('button');
     editBtn.textContent = '编辑';
     editBtn.className = 'small';
-    editBtn.onclick = () => {
-      labelText.style.display = 'none'; editBtn.style.display = 'none';
-      labelInput.style.display = ''; labelInput.focus(); labelInput.select();
-    };
-    labelInput.onblur = async () => {
-      labelText.textContent = labelInput.value || x.label;
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '保存'; saveBtn.className = 'small';
+    saveBtn.style.display = 'none';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '取消'; cancelBtn.className = 'small';
+    cancelBtn.style.display = 'none';
+    const saveEdit = async () => {
+      const v = labelInput.value.trim();
+      if (!v) return;
+      labelText.textContent = v; x.label = v;
       labelText.style.display = ''; editBtn.style.display = '';
-      labelInput.style.display = 'none';
-      if (labelInput.value !== x.label) {
-        await api('/api/admin/keys/' + x.id, { method: 'POST', body: JSON.stringify({ label: labelInput.value }) });
-        x.label = labelInput.value;
-      }
+      labelInput.style.display = 'none'; saveBtn.style.display = 'none'; cancelBtn.style.display = 'none';
+      await api('/api/admin/keys/' + x.id, { method: 'POST', body: JSON.stringify({ label: v }) });
     };
-    labelInput.onkeydown = (e) => { if (e.key === 'Enter') labelInput.blur(); };
+    const cancelEdit = () => {
+      labelInput.value = x.label;
+      labelText.style.display = ''; editBtn.style.display = '';
+      labelInput.style.display = 'none'; saveBtn.style.display = 'none'; cancelBtn.style.display = 'none';
+    };
+    editBtn.onclick = () => {
+      labelInput.value = x.label;
+      labelText.style.display = 'none'; editBtn.style.display = 'none';
+      labelInput.style.display = ''; saveBtn.style.display = ''; cancelBtn.style.display = '';
+      labelInput.focus();
+    };
+    saveBtn.onclick = saveEdit;
+    cancelBtn.onclick = cancelEdit;
+    labelInput.onkeydown = (e) => { if (e.key === 'Enter') saveEdit(); if (e.key === 'Escape') cancelEdit(); };
     const code = document.createElement('code');
     code.textContent = x.key;
-    info.append(labelText, labelInput, editBtn, document.createElement('br'), code);
+    info.append(labelText, labelInput, editBtn, saveBtn, cancelBtn, document.createElement('br'), code);
     const actions = document.createElement('span');
     const use = document.createElement('button');
     use.textContent = '客户端安装';
