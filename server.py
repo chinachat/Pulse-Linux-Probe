@@ -248,10 +248,12 @@ class App(SimpleHTTPRequestHandler):
             return self.wfile.write(b'{"ok":true}')
         if path == "/api/report":
             key = self.headers.get("X-API-Key", "")
-            if key in DATA["revoked_keys"]:
-                log.warning("report dropped: revoked key %s... from %s", key[:8], self.client_ip())
-                return self.send_empty()
-            if not any(k["key"] == key for k in DATA["keys"]): return self.send_json({"error": "invalid key"}, 401)
+            with LOCK:
+                if key in DATA["revoked_keys"]:
+                    log.warning("report dropped: revoked key %s... from %s", key[:8], self.client_ip())
+                    return self.send_empty()
+                valid = any(k["key"] == key for k in DATA["keys"])
+            if not valid: return self.send_json({"error": "invalid key"}, 401)
             hostname = str(body.get("hostname", "unknown"))[:100]
             node_id = hashlib.sha256((key + hostname).encode()).hexdigest()[:16]
             if node_id in blocked_ids():
