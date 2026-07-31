@@ -141,6 +141,7 @@ function render(nodes) {
   // online groups
   Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc) + ' ' + cc, groups[cc]));
   if (offline.length) addGroup('离线节点', offline, true);
+  updateGroupNav();
 }
 let _lastNodes = null;
 let _lastNodesSig = '';
@@ -356,7 +357,32 @@ setInterval(() => {
   const editing = a && a.tagName === 'INPUT' && $('#manage').contains(a);
   if (!$('#admin-panel').hidden && !$('#manage').hidden && !editing) loadAdmin().catch(() => {});
 }, 10000);
-$('#to-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-window.addEventListener('scroll', () => {
-  $('#to-top').classList.toggle('show', window.scrollY > 300);
-});
+function updateGroupNav() {
+  const nav = $('#group-nav');
+  if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }
+  nav.style.display = '';
+  nav.querySelectorAll('.nav-group').forEach(el => el.remove());
+  document.querySelectorAll('.group').forEach(g => {
+    const b = g.querySelector('.group-header b');
+    if (!b) return;
+    const a = document.createElement('a');
+    a.className = 'nav-group';
+    a.innerHTML = b.innerHTML;
+    a.onclick = () => g.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    nav.insertBefore(a, nav.querySelector('.nav-top'));
+  });
+  document.querySelectorAll('.group').forEach(g => navObserver.observe(g));
+}
+$('#group-nav .nav-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+const navObserver = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (!e.isIntersecting) return;
+    const b = e.target.querySelector('.group-header b');
+    if (!b) return;
+    const key = b.textContent;
+    document.querySelectorAll('#group-nav .nav-group').forEach(a => {
+      const ab = a.querySelector('b');
+      a.classList.toggle('active', ab && ab.textContent === key);
+    });
+  });
+}, { rootMargin: '-20% 0px -60% 0px' });
