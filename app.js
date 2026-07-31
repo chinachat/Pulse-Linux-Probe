@@ -216,7 +216,17 @@ function renderAdminNodes(nodes) {
     save.textContent = '保存';
     save.onclick = async () => {
       await api('/api/admin/nodes', { method: 'POST', body: JSON.stringify({ id: x.id, name: name.value, country: country.value }) });
-      refresh();
+$('#copy-install').onclick = async () => {
+  const cmd = $('#install').textContent;
+  if (!cmd || cmd.startsWith('请')) return;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    const btn = $('#copy-install');
+    btn.textContent = '已复制';
+    setTimeout(() => btn.textContent = '复制', 2000);
+  } catch (_) { /* clipboard API not available */ }
+};
+refresh();
       loadAdmin();  // 后台列表同步刷新，不然改名/归属地看起来没生效
     };
     const del = document.createElement('button');
