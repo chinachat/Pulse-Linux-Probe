@@ -40,8 +40,8 @@ function networkChart(canvas, history = [], current = {}) {
   // 基线
   c.strokeStyle = grid;
   c.beginPath(); c.moveTo(ml, h - 4); c.lineTo(w, h - 4); c.stroke();
-  // 曲线 + 末端圆点 + 当前值标注（rx 标在上方，tx 标在下方，避免重叠）
-  [['rx', '#38bdf8', -7], ['tx', '#10b981', 14]].forEach(([key, color, dy]) => {
+  // 曲线 + 末端圆点
+  [['rx', '#38bdf8'], ['tx', '#10b981']].forEach(([key, color]) => {
     c.beginPath();
     samples.forEach((x, i) => { i ? c.lineTo(px(i), py(x[key])) : c.moveTo(px(0), py(x[key])); });
     c.strokeStyle = color; c.lineWidth = 2; c.stroke();
@@ -49,11 +49,6 @@ function networkChart(canvas, history = [], current = {}) {
     const lx = px(samples.length - 1), ly = py(last[key]);
     c.fillStyle = color;
     c.beginPath(); c.arc(lx, ly, 3, 0, Math.PI * 2); c.fill();
-    const label = mbpsNum(last[key]);
-    c.font = "10px 'DM Mono', monospace";
-    const tx = Math.max(ml, lx - c.measureText(label).width - 6);
-    const ty = Math.min(Math.max(ly + dy, 9), h - 2);
-    c.fillText(label, tx, ty);
   });
 }
 function duration(s) {
@@ -102,7 +97,7 @@ function render(nodes) {
     e.querySelector('.status').textContent = n.online ? '在线' : '离线';
     e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.net').textContent = '';
+    e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     // canvas 必须先挂载到文档再绘制：在未挂载的 fragment 上浏览器无法解析
     // 字体（font 赋值被忽略、measureText 返回 0），图表上的文字刻度会全部丢失
     box.append(e);
