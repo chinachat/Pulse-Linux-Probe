@@ -6,7 +6,8 @@ services:
     environment:
       PROBE_ADMIN_PASSWORD: ${PROBE_ADMIN_PASSWORD:?Set PROBE_ADMIN_PASSWORD in .env or the environment}
       PROBE_DATA_KEY: ${PROBE_DATA_KEY:?Set PROBE_DATA_KEY in .env or the environment}
-      # PROBE_PUBLIC_URL: https://probe.example.com
+      PROBE_TRUST_PROXY: "true"
+      PROBE_PUBLIC_URL: ${PROBE_PUBLIC_URL:-https://probe.example.com}
     volumes:
       - probe-data:/data
     restart: unless-stopped
