@@ -37,7 +37,7 @@ if ADMIN_PASSWORD == "change-me":
 
 SESSIONS = {}        # token -> expiry timestamp
 LOGIN_FAILURES = {}  # client ip -> [failure timestamps]
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 _AGENT_SCRIPT = None
 _LAST_SAVE = 0.0
 SAVE_DEBOUNCE = 5  # seconds between automatic saves
