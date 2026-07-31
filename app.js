@@ -68,13 +68,23 @@ function bytes(v) {
   if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
   return (v / 1e3).toFixed(0) + ' KB';
 }
-function gauge(canvas, v) {
+function gauge(canvas, v, label, sub) {
   const c = canvas.getContext('2d'), d = devicePixelRatio || 1;
   c.canvas.width = c.canvas.height = 62 * d; c.scale(d, d); c.lineWidth = 6;
   c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
   c.beginPath(); c.arc(31, 31, 25, -1.57, 4.71); c.stroke();
   c.strokeStyle = v > 80 ? '#f97316' : '#10b981';
   c.beginPath(); c.arc(31, 31, 25, -1.57, 4.71 * v / 100 - 1.57); c.stroke();
+  const cs = getComputedStyle(document.body);
+  c.fillStyle = cs.getPropertyValue('--text');
+  c.font = "bold 13px 'DM Mono', monospace";
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(label, 31, sub ? 24 : 31);
+  if (sub) {
+    c.fillStyle = cs.getPropertyValue('--muted');
+    c.font = "9px 'Noto Sans SC', sans-serif";
+    c.fillText(sub, 31, 40);
+  }
 }
 function render(nodes) {
   $('#online').textContent = nodes.filter(n => n.online).length;
@@ -100,8 +110,13 @@ function render(nodes) {
     box.append(e);
     const card = box.lastElementChild;
     card.querySelectorAll('.metrics div').forEach((x, i) => {
-      gauge(x.querySelector('canvas'), ms[i] || 0);
-      x.querySelector('b').textContent = (ms[i] || 0) + '%';
+      const labels = [
+        [ms[0] + '%', n.cpu_cores ? n.cpu_cores + '核' : ''],
+        [ms[1] + '%', n.mem_total ? bytes(n.mem_total) : ''],
+        [ms[2] + '%', n.disk_total ? bytes(n.disk_total) : ''],
+      ];
+      gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
+      x.querySelector('b').textContent = '';
     });
     networkChart(card.querySelector('.network-chart canvas'), n.history, n);
   });
