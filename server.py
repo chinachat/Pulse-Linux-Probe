@@ -281,6 +281,18 @@ class App(SimpleHTTPRequestHandler):
                 DATA["keys"].append(item); save_data(force=True)
             log.info("api key %s created (label %r)", item["id"], item["label"])
             return self.send_json(item, 201)
+        if self.path.startswith("/api/admin/keys/"):
+            key_id = self.path.rsplit("/", 1)[-1]
+            label = str(body.get("label", "")).strip()[:60]
+            if not label: return self.send_json({"error": "label required"}, 400)
+            with LOCK:
+                for k in DATA["keys"]:
+                    if k["id"] == key_id:
+                        k["label"] = label
+                        save_data(force=True)
+                        log.info("api key %s label updated to %r", key_id, label)
+                        return self.send_json(k)
+            return self.send_json({"error": "key not found"}, 404)
         if path == "/api/admin/nodes":
             with LOCK:
                 node = DATA["nodes"].get(body.get("id"))

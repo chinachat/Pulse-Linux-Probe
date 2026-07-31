@@ -176,11 +176,32 @@ function renderKeys(keys) {
     const row = document.createElement('div');
     row.className = 'key';
     const info = document.createElement('span');
-    const label = document.createElement('b');
-    label.textContent = x.label;
+    const labelText = document.createElement('b');
+    labelText.textContent = x.label;
+    const labelInput = document.createElement('input');
+    labelInput.value = x.label;
+    labelInput.className = 'key-label';
+    labelInput.style.display = 'none';
+    const editBtn = document.createElement('button');
+    editBtn.textContent = '编辑';
+    editBtn.className = 'small';
+    editBtn.onclick = () => {
+      labelText.style.display = 'none'; editBtn.style.display = 'none';
+      labelInput.style.display = ''; labelInput.focus(); labelInput.select();
+    };
+    labelInput.onblur = async () => {
+      labelText.textContent = labelInput.value || x.label;
+      labelText.style.display = ''; editBtn.style.display = '';
+      labelInput.style.display = 'none';
+      if (labelInput.value !== x.label) {
+        await api('/api/admin/keys/' + x.id, { method: 'POST', body: JSON.stringify({ label: labelInput.value }) });
+        x.label = labelInput.value;
+      }
+    };
+    labelInput.onkeydown = (e) => { if (e.key === 'Enter') labelInput.blur(); };
     const code = document.createElement('code');
     code.textContent = x.key;
-    info.append(label, document.createElement('br'), code);
+    info.append(labelText, labelInput, editBtn, document.createElement('br'), code);
     const actions = document.createElement('span');
     const use = document.createElement('button');
     use.textContent = '客户端安装';
@@ -298,3 +319,7 @@ setInterval(() => {
   const editing = a && a.tagName === 'INPUT' && $('#manage').contains(a);
   if (!$('#admin-panel').hidden && !$('#manage').hidden && !editing) loadAdmin().catch(() => {});
 }, 10000);
+$('#to-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+window.addEventListener('scroll', () => {
+  $('#to-top').classList.toggle('show', window.scrollY > 300);
+});
