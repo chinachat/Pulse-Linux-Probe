@@ -91,7 +91,8 @@ function render(nodes) {
     e.querySelector('.status').textContent = n.online ? '在线' : '离线';
     e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.specs').textContent = (n.cpu_cores || '?') + '核 · ' + bytes(n.mem_total) + ' · ' + bytes(n.disk_total);
+    const specs = e.querySelector('.specs');
+    if (specs) specs.textContent = (n.cpu_cores || '?') + '核 · ' + bytes(n.mem_total) + ' · ' + bytes(n.disk_total);
     // 网络区块：实时速率（Mbps）与动态图表放在一起
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     // canvas 必须先挂载到文档再绘制：在未挂载的 fragment 上浏览器无法解析
