@@ -82,37 +82,65 @@ function gauge(canvas, v, label, sub) {
     c.fillText(sub, 31, 40);
   }
 }
+function createCard(n, container) {
+  const e = $('#node-card').content.cloneNode(true);
+  const ms = [n.cpu, n.memory, n.disk];
+  e.querySelector('strong').textContent = n.name || '未命名节点';
+  e.querySelector('.loc').innerHTML = countryFlag(n.country);
+  e.querySelector('.ip').textContent = n.ip;
+  e.querySelector('i').className = n.online ? '' : 'offline';
+  e.querySelector('.status').textContent = n.online ? '在线' : '离线';
+  e.querySelector('.os').textContent = n.os || '系统未知';
+  e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+  e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
+  container.append(e);
+  const card = container.lastElementChild;
+  card.querySelectorAll('.metrics div').forEach((x, i) => {
+    const labels = [
+      [ms[0] + '%', n.cpu_cores ? n.cpu_cores + '核' : ''],
+      [ms[1] + '%', n.mem_total ? bytes(n.mem_total) : ''],
+      [ms[2] + '%', n.disk_total ? bytes(n.disk_total) : ''],
+    ];
+    gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
+    x.querySelector('b').textContent = '';
+  });
+  networkChart(card.querySelector('.network-chart canvas'), n.history, n);
+}
 function render(nodes) {
   $('#online').textContent = nodes.filter(n => n.online).length;
   const box = $('#nodes');
   box.innerHTML = '';
+  // group online nodes by country
+  const groups = {}; const offline = [];
   nodes.forEach(n => {
-    const e = $('#node-card').content.cloneNode(true);
-    const ms = [n.cpu, n.memory, n.disk];
-    // 标题行：状态点 + 主机名 + 国旗 + IP 一排展示
-    e.querySelector('strong').textContent = n.name || '未命名节点';
-    e.querySelector('.loc').innerHTML = countryFlag(n.country);
-    e.querySelector('.ip').textContent = n.ip;
-    e.querySelector('i').className = n.online ? '' : 'offline';
-    e.querySelector('.status').textContent = n.online ? '在线' : '离线';
-    e.querySelector('.os').textContent = n.os || '系统未知';
-    e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
-    // canvas 必须先挂载到文档再绘制：在未挂载的 fragment 上浏览器无法解析
-    // 字体（font 赋值被忽略、measureText 返回 0），图表上的文字刻度会全部丢失
-    box.append(e);
-    const card = box.lastElementChild;
-    card.querySelectorAll('.metrics div').forEach((x, i) => {
-      const labels = [
-        [ms[0] + '%', n.cpu_cores ? n.cpu_cores + '核' : ''],
-        [ms[1] + '%', n.mem_total ? bytes(n.mem_total) : ''],
-        [ms[2] + '%', n.disk_total ? bytes(n.disk_total) : ''],
-      ];
-      gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
-      x.querySelector('b').textContent = '';
-    });
-    networkChart(card.querySelector('.network-chart canvas'), n.history, n);
+    if (n.online) { const cc = n.country || '??'; (groups[cc] = groups[cc] || []).push(n); }
+    else { offline.push(n); }
   });
+  const saved = JSON.parse(localStorage.getItem('probe-groups') || '{}');
+  function addGroup(label, groupNodes, alwaysOpen) {
+    const g = document.createElement('div'); g.className = 'group';
+    const h = document.createElement('div'); h.className = 'group-header';
+    h.innerHTML = '<b>' + label + '</b><span>' + groupNodes.length + '</span>';
+    const c = document.createElement('div'); c.className = 'group-content';
+    groupNodes.forEach(n => createCard(n, c));
+    const key = label.replace(/<[^>]+>/g, '').trim();
+    if (!alwaysOpen && saved[key]) { c.classList.add('collapsed'); h.classList.add('collapsed'); }
+    h.onclick = () => {
+      c.classList.toggle('collapsed'); h.classList.toggle('collapsed');
+      saved[key] = c.classList.contains('collapsed');
+      localStorage.setItem('probe-groups', JSON.stringify(saved));
+    };
+    g.append(h, c); box.appendChild(g);
+  }
+  // controls
+  const ctrl = document.createElement('div'); ctrl.className = 'group-controls';
+  ctrl.innerHTML = '<button class="small">全部展开</button><button class="small">全部收起</button>';
+  ctrl.children[0].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
+  ctrl.children[1].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed')); const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; }); localStorage.setItem('probe-groups', JSON.stringify(all)); };
+  box.appendChild(ctrl);
+  // online groups
+  Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc) + ' ' + cc, groups[cc]));
+  if (offline.length) addGroup('离线节点', offline, true);
 }
 let _lastNodes = null;
 let _lastNodesSig = '';
