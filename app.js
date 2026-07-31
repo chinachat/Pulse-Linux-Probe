@@ -18,7 +18,8 @@ function mbpsNum(value) {
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
 function networkChart(canvas, history = [], current = {}) {
-  const w = 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const parentW = canvas.parentElement.clientWidth;
+  const w = parentW || 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   canvas.width = w * d; canvas.height = h * d; c.scale(d, d);
   const cs = getComputedStyle(document.body);
   const muted = cs.getPropertyValue('--muted'), grid = cs.getPropertyValue('--line');
@@ -136,7 +137,11 @@ $('#theme').onclick = () => {
   $('#theme').textContent = document.body.classList.contains('dark') ? '浅色' : '深色';
   if (_lastNodes) render(_lastNodes);
 };
-$('#layout').onclick = () => $('#nodes').classList.toggle('list');
+$('#layout').onclick = () => {
+  $('#nodes').classList.toggle('list');
+  _lastNodesSig = '';
+  refresh();
+};
 $('#admin').onclick = () => { $('#dashboard').hidden = true; $('#admin-panel').hidden = false; };
 $('#back').onclick = () => { $('#dashboard').hidden = false; $('#admin-panel').hidden = true; };
 
