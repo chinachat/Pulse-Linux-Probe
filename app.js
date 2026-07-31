@@ -1,6 +1,11 @@
 const $ = s => document.querySelector(s);
 const api = (u, o = {}) => fetch(u, { headers: { 'Content-Type': 'application/json', ...(o.headers || {}) }, ...o })
-  .then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw Error(b.error || 'HTTP ' + r.status); return b; });
+  .then(async r => {
+    let b = {};
+    try { b = await r.json(); } catch (_) { /* non-json body */ }
+    if (!r.ok) throw Error(b.error || 'HTTP ' + r.status);
+    return b;
+  });
 
 function countryFlag(code) {
   const cc = (code || '').toUpperCase();
@@ -92,14 +97,23 @@ function render(nodes) {
     networkChart(card.querySelector('.network-chart canvas'), n.history, n);
   });
 }
+let _lastNodes = null;
+let _lastNodesSig = '';
 async function refresh() {
-  try { render((await api('/api/nodes')).nodes); } catch (e) { console.error(e); }
+  try {
+    const data = (await api('/api/nodes')).nodes;
+    const sig = JSON.stringify(data);
+    if (sig === _lastNodesSig) return;
+    _lastNodesSig = sig;
+    _lastNodes = data;
+    render(data);
+  } catch (e) { console.error(e); }
 }
 
 $('#theme').onclick = () => {
   document.body.classList.toggle('dark');
   $('#theme').textContent = document.body.classList.contains('dark') ? '浅色' : '深色';
-  refresh();
+  if (_lastNodes) render(_lastNodes);
 };
 $('#layout').onclick = () => $('#nodes').classList.toggle('list');
 $('#admin').onclick = () => { $('#dashboard').hidden = true; $('#admin-panel').hidden = false; };

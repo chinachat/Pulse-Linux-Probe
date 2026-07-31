@@ -1,0 +1,11 @@
+.git
+.gitignore
+.github
+tests
+*.md
+LICENSE
+docker-compose.yml
+__pycache__
+*.pyc
+.env
+*.tmp

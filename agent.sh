@@ -31,9 +31,29 @@ $(awk -v now="$now" -v state="$state" '
 ' /proc/net/dev)
 EOF_NET
 up=$(cut -d. -f1 /proc/uptime)
-country=$(curl -fsS --connect-timeout 3 https://ipapi.co/country/ 2>/dev/null | tr -cd 'A-Za-z' | head -c 2 || true)
-os=$( ( . /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}" ) || true )
-os=${os//\"/}
+# Cache country lookup (daily refresh to avoid rate limiting)
+country_cache=/var/lib/linux-probe-country
+now=$(date +%s)
+country=""
+if test -f "$country_cache"; then
+  mtime=$(stat -c %Y "$country_cache" 2>/dev/null || echo 0)
+  if test "$(( now - mtime ))" -lt 86400; then
+    country=$(cat "$country_cache")
+  fi
+fi
+if test -z "$country"; then
+  country=$(curl -fsS --connect-timeout 3 https://ipapi.co/country/ 2>/dev/null | tr -cd 'A-Za-z' | head -c 2 || true)
+  echo "$country" > "$country_cache"
+fi
+# Cache OS info (never changes)
+os_cache=/var/lib/linux-probe-os
+if test -f "$os_cache"; then
+  os=$(cat "$os_cache")
+else
+  os=$( ( . /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}" ) || true )
+  os=${os//\"/}
+  echo "$os" > "$os_cache"
+fi
 printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload
