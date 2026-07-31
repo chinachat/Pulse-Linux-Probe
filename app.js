@@ -61,6 +61,13 @@ function duration(s) {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
   return `${h}小时 ${m}分`;
 }
+function bytes(v) {
+  v = Number(v) || 0;
+  if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB';
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
+  return (v / 1e3).toFixed(0) + ' KB';
+}
 function gauge(canvas, v) {
   const c = canvas.getContext('2d'), d = devicePixelRatio || 1;
   c.canvas.width = c.canvas.height = 62 * d; c.scale(d, d); c.lineWidth = 6;
@@ -84,6 +91,7 @@ function render(nodes) {
     e.querySelector('.status').textContent = n.online ? '在线' : '离线';
     e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+    e.querySelector('.specs').textContent = (n.cpu_cores || '?') + '核 · ' + bytes(n.mem_total) + ' · ' + bytes(n.disk_total);
     // 网络区块：实时速率（Mbps）与动态图表放在一起
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     // canvas 必须先挂载到文档再绘制：在未挂载的 fragment 上浏览器无法解析
