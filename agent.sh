@@ -16,7 +16,7 @@ disk=$(df -P / | awk 'NR==2 {gsub("%","",$5);print $5}')
 now=$(date +%s)
 state=/var/lib/linux-probe-network
 install -d /var/lib
-read -r net_rx net_tx <<EOF_NET
+read -r net_rx net_tx total_rx total_tx <<EOF_NET
 $(awk -v now="$now" -v state="$state" '
   BEGIN { if ((getline < state) == 1 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) { old_rx=$1; old_tx=$2; old_now=$3 } }
   NR > 2 && $1 != "lo:" { rx += $2; tx += $10 }
@@ -25,7 +25,7 @@ $(awk -v now="$now" -v state="$state" '
     if (!old_now) { old_rx = rx; old_tx = tx }
     drx = rx - old_rx; if (drx < 0) drx = 0
     dtx = tx - old_tx; if (dtx < 0) dtx = 0
-    printf "%.0f %.0f\n", drx/elapsed, dtx/elapsed
+    printf "%.0f %.0f %.0f %.0f\n", drx/elapsed, dtx/elapsed, rx, tx
     printf "%.0f %.0f %s\n", rx, tx, now > state
   }
 ' /proc/net/dev)
@@ -62,7 +62,7 @@ do_ping() { local h=${1%%:*} p=${1##*:}; test -n "$h" && test -n "$p" || { echo 
 tcp_ping_ct=$(do_ping "__PING_CT__")
 tcp_ping_cu=$(do_ping "__PING_CU__")
 tcp_ping_cm=$(do_ping "__PING_CM__")
-printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm"
+printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s,"net_total_rx":%s,"net_total_tx":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm" "$total_rx" "$total_tx"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload
 report="$(/usr/local/bin/linux-probe-payload)"

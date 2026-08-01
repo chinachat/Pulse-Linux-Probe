@@ -108,6 +108,11 @@ function osIcon(os) {
   const src = 'https://cdn.jsdelivr.net/npm/simple-icons@14/icons/' + cls.replace('rocky','rockylinux').replace('alma','almalinux').replace('arch','archlinux').replace('alpine','alpinelinux').replace('suse','opensuse') + '.svg';
   return '<span class="os-tag ' + cls + '"><img src="' + src + '" class="os-svg" onerror="this.remove()"><b>' + label + '</b>' + ver + '</span>';
 }
+function bytesTotal(rx, tx) {
+  if (!rx && !tx) return '';
+  const f = v => { v = Number(v) || 0; return v >= 1e12 ? (v/1e12).toFixed(1)+'TB' : v >= 1e9 ? (v/1e9).toFixed(1)+'GB' : (v/1e6).toFixed(1)+'MB'; };
+  return f(rx) + ' ↓ / ' + f(tx) + ' ↑';
+}
 function bytes(v) {
   v = Number(v) || 0;
   if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
@@ -143,6 +148,7 @@ function createCard(n, container) {
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
     e.querySelector('.os').innerHTML = osIcon(n.os);
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+    e.querySelector('.traffic').textContent = bytesTotal(n.net_total_rx, n.net_total_tx);
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     const prow = e.querySelector('.ping-row');
     if (prow) {
