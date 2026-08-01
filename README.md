@@ -4,33 +4,36 @@
 
 Multi-node Linux monitoring dashboard: a dependency-free Python 3 server, a
 one-line Bash agent installer, and a live web dashboard with masked IPs,
-country flags, resource gauges, hardware specs, and network-rate charts.
+country flags, hardware specs, bar charts, network-rate indicators, and
+real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 
 ## Features
 
-- **Resource monitoring** — CPU / memory / disk gauges with percentage + total capacity in center
-- **Hardware specs** — CPU cores, total memory, and total disk capacity per node
-- **Network rate charts** — 120-sample history with responsive-width canvas and left-axis Mbps labels
-- **Group display** — nodes auto-grouped by country with collapse/expand; offline nodes in separate group
-- **Floating nav panel** — right-side panel with group links, scroll-spy highlighting, one-click back-to-top
-- **Encrypted data file** — SHA-256 keystream + HMAC-SHA256 integrity with atomic writes and debounced saves
-- **API-key reporting** with revoke and node blocking (blocked nodes can be listed and unblocked)
-- **Admin console** — key management with editable labels, node rename/country override, admin username change, one-line client installer with copy button
-- **Hardened by default** — static-file whitelist, constant-time credential checks, login rate limiting, expiring sessions, security headers, thread-safe data access
+- **Resource monitoring** — CPU / memory / disk horizontal bar charts with percentage + total capacity
+- **Hardware specs** — CPU cores, total memory, total disk capacity, cumulative traffic per node
+- **Network metrics** — real-time throughput (Mbps) + total upload/download (MB/GB/TB)
+- **TCP ping** — CT (电信) / CU (联通) / CM (移动) latency badges with color coding (green ≤100ms / yellow ≤300ms / red >300ms)
+- **Ping history chart** — SVG-based line chart with 60-sample history and Y-axis labels
+- **Group display** — nodes auto-grouped by country, collapse/expand with localStorage persistence
+- **Floating nav panel** — group + node anchors, scroll-spy highlighting, mobile toggle, back-to-top
+- **Encrypted data file** — SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
+- **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login
+- **Admin console** — API key management (editable labels), node rename/country override, admin username change, one-line client installer with copy button, three-carrier ping target configuration
 
-## Quick start
+## Quick start (development)
 
 ```bash
-PROBE_ADMIN_PASSWORD='strong-password' python3 server.py
+PROBE_ADMIN_PASSWORD='strong-password' PROBE_DATA_KEY='another-random-key' python3 server.py
 ```
 
-Open `http://server-ip:8080`, sign in as `admin`, create an API Key, click
-**Client install** to generate the one-line installer, and run it on each
-Linux node.
+> Both `PROBE_ADMIN_PASSWORD` and `PROBE_DATA_KEY` are **mandatory** — the server refuses
+> to start without them or if they are identical.
 
-## Docker deployment (recommended)
+## Docker deployment
 
-### 1. Prepare environment
+See [DEPLOY.md](DEPLOY.md) for complete deployment and maintenance guide.
+
+### Minimal
 
 ```bash
 git clone https://github.com/chinachat/Pulse-Linux-Probe.git
@@ -38,23 +41,17 @@ cd Pulse-Linux-Probe
 echo 'PROBE_ADMIN_PASSWORD=your-strong-password' > .env
 echo 'PROBE_DATA_KEY=your-random-data-key' >> .env
 echo 'PROBE_PUBLIC_URL=https://probe.yourdomain.com' >> .env  # optional
-```
-
-### 2. Start
-
-```bash
 docker compose up -d --build
 ```
 
-### 3. Reverse proxy (nginx example)
+Persistence: `probe-data` volume (mounted at `/data` in the container).
 
-To get real client IPs (instead of Docker internal `172.x.x.x`), put a reverse proxy in front:
+### Reverse proxy (nginx)
 
 ```nginx
 server {
     listen 80;
     server_name probe.yourdomain.com;
-
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
@@ -65,28 +62,7 @@ server {
 }
 ```
 
-Then set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com` in `.env`.
-
-> With Caddy: `caddy reverse-proxy --from probe.yourdomain.com --to localhost:8080`
-
-### 4. Update
-
-```bash
-git pull
-docker compose down
-docker compose up -d --build
-```
-
-## Server installer (systemd)
-
-Copy project files to `/opt/pulse-probe`, then run:
-
-```bash
-cd /opt/pulse-probe
-PROBE_ADMIN_PASSWORD='your-password' PROBE_DATA_KEY='random-key' ./install-server.sh
-```
-
-Creates and starts `pulse-probe.service` on port 8080. Requires Python 3.
+Set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com` in `.env` for real client IPs.
 
 ## Environment variables
 
@@ -94,47 +70,66 @@ Creates and starts `pulse-probe.service` on port 8080. Requires Python 3.
 |---|---|---|
 | `PORT` | `8080` | Listen port |
 | `PROBE_ADMIN_USER` | `admin` | Initial admin username (UI-saved name takes precedence) |
-| `PROBE_ADMIN_PASSWORD` | `change-me` | Admin password (**change this!**) |
-| `PROBE_DATA_KEY` | derived from password | Encryption key for `data.enc` |
-| `PROBE_DATA_DIR` | project directory | Where `data.enc` is stored |
-| `PROBE_PUBLIC_URL` | derived from request | Public base URL for generated install scripts |
+| `PROBE_ADMIN_PASSWORD` | **required** | Admin password |
+| `PROBE_DATA_KEY` | **required** | Encryption key for `data.enc` (must differ from password) |
+| `PROBE_DATA_DIR` | project dir | Where `data.enc` is stored |
+| `PROBE_PUBLIC_URL` | from request | Public base URL for generated install scripts |
 | `PROBE_SESSION_TTL` | `43200` (12h) | Admin session lifetime in seconds |
 | `PROBE_OFFLINE_SECONDS` | `90` | Node shown offline after this many seconds without report |
-| `PROBE_REQUIRE_SET_PASSWORD` | unset | Refuse to start with default password if set |
 | `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for real client IPs |
 
 ## Client agent
 
 Reports every minute via cron:
 
-- **CPU** — 1-second delta sampling from `/proc/stat`
-- **Memory** — usage percentage + total capacity from `/proc/meminfo`
-- **Disk** — root partition usage + total capacity from `df`
-- **Network** — rx/tx throughput in bytes/sec (loopback excluded)
-- **Uptime**, **OS name**, **country code**, **CPU cores**
+- CPU (1-second delta sampling), memory usage + total, root disk usage + total
+- Network rx/tx throughput (bytes/sec, loopback excluded) + cumulative totals
+- Uptime, OS name + version (SVG icon), country code (cached 24h), CPU cores
+- TCP ping to three configurable targets (CT/CU/CM)
 
-Country lookup caches result for 24 hours. OS info is cached permanently.
+Country lookup caches result for 24 hours. OS info cached permanently.
 
-## API overview
+## Admin console
+
+1. **API Keys** — create, edit labels, revoke, generate client installer
+2. **Client Install** — one-liner copyable command, auto-embeds ping targets
+3. **Nodes** — rename, set country, delete (auto-blocks)
+4. **Blocked Nodes** — view and unblock
+5. **Account** — change admin username
+6. **Ping Targets** — configure three-carrier TCP ping endpoints (host:port)
+
+## API
 
 | Endpoint | Auth | Description |
 |---|---|---|
 | `GET /api/health` | none | Health check |
 | `GET /api/nodes` | none | Public node list (masked IPs) |
 | `POST /api/report` | `X-API-Key` | Agent report |
-| `POST /api/login` / `POST /api/logout` | none | Admin session |
+| `POST /api/login` | none | Admin login (returns CSRF token) |
+| `POST /api/logout` | none | Admin logout |
 | `GET /api/admin/keys` | session | List API keys |
-| `POST /api/admin/keys` | session | Create API key |
-| `POST /api/admin/keys/{id}` | session | Update key label |
-| `DELETE /api/admin/keys/{id}` | session | Revoke key |
+| `POST /api/admin/keys` | session+CSRF | Create API key |
+| `POST /api/admin/keys/{id}` | session+CSRF | Update key label |
+| `DELETE /api/admin/keys/{id}` | session+CSRF | Revoke key |
 | `GET /api/admin/nodes` | session | Node list (real IPs) |
-| `POST /api/admin/nodes` | session | Edit node name/country |
-| `DELETE /api/admin/nodes/{id}` | session | Delete + block node |
+| `POST /api/admin/nodes` | session+CSRF | Edit node name/country |
+| `DELETE /api/admin/nodes/{id}` | session+CSRF | Delete + block node |
 | `GET /api/admin/blocked` | session | List blocked nodes |
-| `POST /api/admin/unblock` | session | Unblock node |
-| `GET /api/admin/settings` | session | View settings |
-| `POST /api/admin/settings` | session | Change admin username |
+| `POST /api/admin/unblock` | session+CSRF | Unblock node |
+| `GET /api/admin/settings` | session | View settings (includes CSRF token) |
+| `POST /api/admin/settings` | session+CSRF | Change username / ping targets |
 | `GET /api/install.sh?key=...` | session | Generate client installer |
+
+## Security
+
+- `PROBE_ADMIN_PASSWORD` and `PROBE_DATA_KEY` are mandatory and must differ
+- CSRF protection on all admin state-changing endpoints (`X-CSRF-Token` header)
+- Docker container runs as non-root `pulse` user with `read_only` rootfs
+- Session cookies: `HttpOnly`, `SameSite=Strict`, `Secure` (when HTTPS)
+- Login rate-limited: 5 failures / 5 minutes per IP
+- Content-Security-Policy, X-Frame-Options, HSTS (on HTTPS), static file whitelist
+- Constant-time password comparison (`hmac.compare_digest`)
+- `X-Forwarded-For` spoofing blocked by default (`PROBE_TRUST_PROXY`)
 
 ## Development
 
@@ -142,17 +137,7 @@ Country lookup caches result for 24 hours. OS info is cached permanently.
 python -m pytest tests/ -v
 ```
 
-CI (GitHub Actions) runs `py_compile`, test suite on Python 3.10/3.12, and
-ShellCheck. See `.github/workflows/ci.yml`.
-
-## Security notes
-
-- **Always** set a strong `PROBE_ADMIN_PASSWORD` and `PROBE_DATA_KEY` before exposing the server.
-- Put the server behind HTTPS (reverse proxy) for production.
-- Enable `PROBE_TRUST_PROXY=true` only when a reverse proxy correctly sets `X-Forwarded-For`.
-- Static files are whitelisted; `data.enc` and source files are not served over HTTP.
-- Login is rate-limited per IP (5 failures / 5 minutes).
-- API keys are stored in plaintext in client crontabs — protect host accounts accordingly.
+See `.github/workflows/ci.yml` for CI details.
 
 ## License
 
