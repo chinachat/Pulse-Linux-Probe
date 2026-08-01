@@ -163,15 +163,13 @@ function createCard(n, container) {
     }
   container.append(e);
   const card = container.lastElementChild;
-  card.querySelectorAll('.mg').forEach((x, i) => {
-    const labels = [
-      [ms[0] + '%', n.cpu_cores ? n.cpu_cores + '核' : ''],
-      [ms[1] + '%', n.mem_total ? bytes(n.mem_total) : ''],
-      [ms[2] + '%', n.disk_total ? bytes(n.disk_total) : ''],
-    ];
-    gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
-    x.querySelector('b').textContent = labels[i][0];
-    x.querySelector('small').textContent = labels[i][1];
+  card.querySelectorAll('.bar').forEach((x, i) => {
+    const v = ms[i] || 0;
+    const fill = x.querySelector('.bar-fill');
+    fill.style.width = v + '%';
+    fill.style.background = v > 80 ? '#ef4444' : v > 60 ? '#eab308' : '#10b981';
+    x.querySelector('b').textContent = v + '%';
+    x.querySelector('small').textContent = [n.cpu_cores ? n.cpu_cores + '核' : '', bytes(n.mem_total), bytes(n.disk_total)][i];
   });
   const pc = card.querySelector('.ping-chart canvas');
   if (pc && n.ping_history) pingChart(pc, n.ping_history);
