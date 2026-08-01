@@ -18,35 +18,40 @@ function mbpsNum(value) {
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
 function pingChart(canvas, history = []) {
-  const w = 270, h = 48, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const w = 270, h = 48, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   const pw = (parseInt(canvas.style.width) || w);
   canvas.width = pw * d; canvas.height = h * d; c.scale(d, d);
   const samples = history.slice(-60);
   if (!samples.length) return;
-  const colors = { ct: '#2979FF', cu: '#E64A19', cm: '#00C853' };
-  const px = i => ml + (samples.length > 1 ? i * (pw - ml) / (samples.length - 1) : (pw - ml) / 2);
   const all = samples.flatMap(s => ['ct','cu','cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
   const peak = Math.max(1, ...all);
   if (!all.length) return;
   const py = v => h - 6 - (Number(v) || 0) / peak * (h - 14);
-  const cs = getComputedStyle(document.body);
-  const muted = cs.getPropertyValue('--muted'), grid = cs.getPropertyValue('--line');
-  c.font = "9px 'DM Mono', monospace";
-  [[1, []], [0.5, [3,3]]].forEach(([f, dash]) => {
-    c.strokeStyle = grid; c.setLineDash(dash);
-    const y = py(peak * f);
-    c.beginPath(); c.moveTo(ml, y); c.lineTo(pw, y); c.stroke();
-    c.setLineDash([]);
-    c.fillStyle = muted; c.fillText(Math.round(peak * f), 0, y + 3);
-  });
+  const colors = { ct: '#2979FF', cu: '#E64A19', cm: '#00C853' };
+  const grid = getComputedStyle(document.body).getPropertyValue('--line');
+  // Y-axis grid lines
   c.strokeStyle = grid;
-  c.beginPath(); c.moveTo(ml, h - 4); c.lineTo(pw, h - 4); c.stroke();
-  ['ct','cu','cm'].forEach(key => {
-    const color = colors[key];
-    c.beginPath();
-    samples.forEach((s, i) => { const v = Number(s[key]) || 0; if (!v) return; i ? c.lineTo(px(i), py(v)) : c.moveTo(px(0), py(v)); });
-    c.strokeStyle = color; c.lineWidth = 1.5; c.stroke();
+  [[1, []], [0.5, [3,3]]].forEach(([f, dash]) => {
+    c.setLineDash(dash);
+    c.beginPath(); c.moveTo(0, py(peak * f)); c.lineTo(pw, py(peak * f)); c.stroke();
+    c.setLineDash([]);
   });
+  // baseline
+  c.beginPath(); c.moveTo(0, h - 4); c.lineTo(pw, h - 4); c.stroke();
+  // curves
+  ['ct','cu','cm'].forEach(key => {
+    c.beginPath();
+    samples.forEach((s, i) => { const v = Number(s[key]) || 0; if (!v) return; const x = 0 + (samples.length > 1 ? i * pw / (samples.length - 1) : pw / 2); i ? c.lineTo(x, py(v)) : c.moveTo(0, py(v)); });
+    c.strokeStyle = colors[key]; c.lineWidth = 1.5; c.stroke();
+  });
+  // Y-axis HTML labels
+  const axis = canvas.parentElement.querySelector('.y-axis');
+  if (axis) {
+    const spans = axis.querySelectorAll('span');
+    if (spans[0]) spans[0].textContent = peak;
+    if (spans[1]) spans[1].textContent = Math.round(peak / 2);
+    if (spans[2]) spans[2].textContent = '0';
+  }
 }
 function networkChart(canvas, history = [], current = {}) {
   const parentW = canvas.parentElement.clientWidth;
