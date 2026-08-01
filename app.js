@@ -144,10 +144,10 @@ function createCard(n, container) {
     e.querySelector('.os').innerHTML = osIcon(n.os);
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
-    const legend = e.querySelector('.ping-legend');
-    if (legend) {
+    const prow = e.querySelector('.ping-row');
+    if (prow) {
       const icons = { ct: '电信', cu: '联通', cm: '移动' };
-      legend.innerHTML = ['ct','cu','cm'].map(k => {
+      prow.innerHTML = ['ct','cu','cm'].map(k => {
         const v = n['tcp_ping_' + k];
         if (!v) return '';
         const ms = Number(v);
