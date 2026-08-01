@@ -17,7 +17,32 @@ function mbpsNum(value) {
 }
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
-function networkChart(canvas, history = [], current = {}) {
+function pingChart(canvas, history = []) {
+  const w = 270, h = 36, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const parentW = canvas.parentElement.clientWidth;
+  const pw = (parentW || w);
+  canvas.width = pw * d; canvas.height = h * d; canvas.style.width = pw + 'px';
+  c.scale(d, d);
+  const samples = history.slice(-60);
+  if (!samples.length) return;
+  const colors = { ct: '#2979FF', cu: '#E64A19', cm: '#00C853' };
+  const px = i => ml + (samples.length > 1 ? i * (pw - ml) / (samples.length - 1) : (pw - ml) / 2);
+  const all = samples.flatMap(s => ['ct','cu','cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
+  const peak = Math.max(1, ...all);
+  if (!all.length) return;
+  const py = v => h - 4 - (Number(v) || 0) / peak * (h - 8);
+  c.font = "8px 'DM Mono', monospace";
+  c.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
+  c.fillText(peak + 'ms', 0, 10);
+  c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
+  c.beginPath(); c.moveTo(ml, h - 4); c.lineTo(pw, h - 4); c.stroke();
+  ['ct','cu','cm'].forEach(key => {
+    const color = colors[key];
+    c.beginPath();
+    samples.forEach((s, i) => { const v = Number(s[key]) || 0; if (!v) return; i ? c.lineTo(px(i), py(v)) : c.moveTo(px(0), py(v)); });
+    c.strokeStyle = color; c.lineWidth = 1.5; c.stroke();
+  });
+}(canvas, history = [], current = {}) {
   const parentW = canvas.parentElement.clientWidth;
   const w = parentW || 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   canvas.width = w * d; canvas.height = h * d; c.scale(d, d);
@@ -115,6 +140,8 @@ function createCard(n, container) {
     x.querySelector('b').textContent = '';
   });
   networkChart(card.querySelector('.network-chart canvas'), n.history, n);
+  const pc = card.querySelector('.ping-chart canvas');
+  if (pc && n.ping_history) pingChart(pc, n.ping_history);
 }
 function render(nodes) {
   $('#online').textContent = nodes.filter(n => n.online).length;

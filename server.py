@@ -272,8 +272,10 @@ class App(SimpleHTTPRequestHandler):
                 sample = {"time": now, "rx": body.get("network_rx", 0), "tx": body.get("network_tx", 0),
                           "cpu": body.get("cpu", 0), "memory": body.get("memory", 0), "disk": body.get("disk", 0)}
                 history = (old.get("history", []) + [sample])[-HISTORY_LIMIT:]
+                ping_sample = {"time": now, "ct": body.get("tcp_ping_ct", 0), "cu": body.get("tcp_ping_cu", 0), "cm": body.get("tcp_ping_cm", 0)}
+                ping_history = (old.get("ping_history", []) + [ping_sample])[-HISTORY_LIMIT:]
                 edited = {field: old[field] for field in ("name", "country") if old.get(field)}
-                DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "id": node_id, "hostname": hostname, "ip": ip, "updated": now}
+                DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "ping_history": ping_history, "id": node_id, "hostname": hostname, "ip": ip, "updated": now}
                 save_data()  # debounced; safe to skip writes under high report volume
             if not old:
                 log.info("node %s (%s) first reported from %s", node_id, hostname, ip)
