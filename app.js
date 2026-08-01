@@ -18,7 +18,7 @@ function mbpsNum(value) {
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
 function pingChart(canvas, history = []) {
-  const w = 270, h = 40, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const w = 270, h = 48, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   const pw = (parseInt(canvas.style.width) || w);
   canvas.width = pw * d; canvas.height = h * d; c.scale(d, d);
   const samples = history.slice(-60);
@@ -31,8 +31,8 @@ function pingChart(canvas, history = []) {
   const py = v => h - 6 - (Number(v) || 0) / peak * (h - 14);
   const cs = getComputedStyle(document.body);
   const muted = cs.getPropertyValue('--muted'), grid = cs.getPropertyValue('--line');
-  c.font = "8px 'DM Mono', monospace";
-  [[1, []], [0.5, [3,3]], [0.25, [1,2]]].forEach(([f, dash]) => {
+  c.font = "9px 'DM Mono', monospace";
+  [[1, []], [0.5, [3,3]]].forEach(([f, dash]) => {
     c.strokeStyle = grid; c.setLineDash(dash);
     const y = py(peak * f);
     c.beginPath(); c.moveTo(ml, y); c.lineTo(pw, y); c.stroke();
@@ -147,7 +147,7 @@ function createCard(n, container) {
     e.querySelector('.os').innerHTML = osIcon(n.os);
     e.querySelector('.uptime').innerHTML = '<span class="tag">运行 ' + duration(n.uptime) + '</span>';
     e.querySelector('.traffic').innerHTML = '<span class="tag">流量</span> ' + bytesTotal(n.net_total_rx, n.net_total_tx);
-    e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
+    e.querySelector('.net').innerHTML = '<span class="tag">实时</span> ' + mbps(n.network_rx) + ' ↓ ' + mbps(n.network_tx) + ' ↑';
     const prow = e.querySelector('.ping-row');
     if (prow) {
       const icons = { ct: '电信', cu: '联通', cm: '移动' };
