@@ -118,7 +118,8 @@ function render(nodes) {
     if (n.online) { const cc = n.country || '??'; (groups[cc] = groups[cc] || []).push(n); }
     else { offline.push(n); }
   });
-  const saved = JSON.parse(localStorage.getItem('probe-groups') || '{}');
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('probe-groups') || '{}'); } catch (_) {}
   function addGroup(label, groupNodes, alwaysOpen) {
     const g = document.createElement('div'); g.className = 'group';
     const h = document.createElement('div'); h.className = 'group-header';
@@ -155,7 +156,7 @@ async function refresh() {
     _lastNodesSig = sig;
     _lastNodes = data;
     render(data);
-  } catch (e) { console.error(e); }
+  } catch (e) { console.error(e); alert('渲染失败: ' + e.message); }
 }
 
 $('#theme').onclick = () => {
