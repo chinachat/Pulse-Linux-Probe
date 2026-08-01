@@ -29,18 +29,22 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %
 log = logging.getLogger("pulse-probe")
 
 if ADMIN_PASSWORD == "change-me":
-    MSG = "PROBE_ADMIN_PASSWORD is not set; using the insecure default 'change-me'"
-    if os.getenv("PROBE_REQUIRE_SET_PASSWORD"):
-        log.error("%s; refusing to start because PROBE_REQUIRE_SET_PASSWORD is set", MSG)
-        sys.exit(1)
-    log.warning(MSG)
+    log.error("PROBE_ADMIN_PASSWORD is not set; refusing to start.")
+    log.error("Set PROBE_ADMIN_PASSWORD and PROBE_DATA_KEY in environment.")
+    sys.exit(1)
+if not os.getenv("PROBE_DATA_KEY") or os.getenv("PROBE_DATA_KEY") == ADMIN_PASSWORD:
+    log.error("PROBE_DATA_KEY must be set independently from PROBE_ADMIN_PASSWORD.")
+    sys.exit(1)
 
-SESSIONS = {}        # token -> expiry timestamp
+SESSIONS = {}        # token -> {"expiry": timestamp, "csrf": str}
 LOGIN_FAILURES = {}  # client ip -> [failure timestamps]
 LOCK = threading.RLock()
 _AGENT_SCRIPT = None
 _LAST_SAVE = 0.0
 SAVE_DEBOUNCE = 5  # seconds between automatic saves
+
+def csrf_token(session_token):
+    return SESSIONS.get(session_token, {}).get("csrf", "")
 
 def crypt(data, nonce):
     out = bytearray()
@@ -102,7 +106,7 @@ def mask_ip(ip):
 def prune_sessions():
     now = time.time()
     with LOCK:
-        for token in [t for t, exp in SESSIONS.items() if exp < now]:
+        for token in [t for t, s in SESSIONS.items() if s["expiry"] < now]:
             SESSIONS.pop(token, None)
 
 class App(SimpleHTTPRequestHandler):
@@ -114,6 +118,9 @@ class App(SimpleHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' https://flagcdn.com https://cdn.jsdelivr.net data:; connect-src 'self'; frame-ancestors 'none'")
+        if self.headers.get("X-Forwarded-Proto") == "https":
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         super().end_headers()
 
     def send_json(self, body, status=200):
@@ -148,16 +155,21 @@ class App(SimpleHTTPRequestHandler):
         token = self.session_token()
         if not token: return False
         with LOCK:
-            expiry = SESSIONS.get(token)
-            if not expiry: return False
-            if expiry < time.time():
+            s = SESSIONS.get(token)
+            if not s: return False
+            if s["expiry"] < time.time():
                 SESSIONS.pop(token, None)
                 return False
         return True
 
     def require_admin(self):
-        if self.is_admin(): return True
-        self.send_json({"error": "login required"}, HTTPStatus.UNAUTHORIZED); return False
+        if not self.is_admin(): self.send_json({"error": "login required"}, HTTPStatus.UNAUTHORIZED); return False
+        # CSRF check for state-changing methods
+        if self.command in ("POST", "DELETE"):
+            csrf = self.headers.get("X-CSRF-Token", "")
+            if not csrf or not hmac.compare_digest(csrf.encode(), csrf_token(self.session_token()).encode()):
+                self.send_json({"error": "csrf token required"}, 403); return False
+        return True
 
     def do_GET(self):
         parsed, path = urlparse(self.path), urlparse(self.path).path
@@ -193,6 +205,7 @@ class App(SimpleHTTPRequestHandler):
             return
         if path == "/api/admin/settings":
             if self.require_admin(): self.send_json({"admin_user": admin_user(),
+                "csrf": csrf_token(self.session_token()),
                 "ping_ct": DATA["settings"].get("ping_ct", ""), "ping_cu": DATA["settings"].get("ping_cu", ""), "ping_cm": DATA["settings"].get("ping_cm", "")})
             return
         if path == "/api/install.sh":
@@ -244,12 +257,13 @@ class App(SimpleHTTPRequestHandler):
                 prune_sessions()
                 log.info("login ok for %r from %s", username, ip)
                 token = secrets.token_urlsafe(32)
-                SESSIONS[token] = now + SESSION_TTL
+                csrf = secrets.token_urlsafe(32)
+                SESSIONS[token] = {"expiry": now + SESSION_TTL, "csrf": csrf}
             secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
             self.send_response(200)
             self.send_header("Set-Cookie", f"probe_session={token}; HttpOnly; SameSite=Strict; Path=/{secure}")
             self.end_headers()
-            return self.wfile.write(b'{"ok":true}')
+            return self.wfile.write(json.dumps({"ok": True, "csrf": csrf}).encode())
         if path == "/api/report":
             key = self.headers.get("X-API-Key", "")
             with LOCK:

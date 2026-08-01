@@ -11,6 +11,11 @@ services:
     volumes:
       - probe-data:/data
     restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 100
+    read_only: true
+    tmpfs:
+      - /tmp
 
 volumes:
   probe-data:

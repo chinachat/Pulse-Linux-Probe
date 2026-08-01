@@ -1,11 +1,15 @@
 const $ = s => document.querySelector(s);
-const api = (u, o = {}) => fetch(u, { headers: { 'Content-Type': 'application/json', ...(o.headers || {}) }, ...o })
-  .then(async r => {
+let _csrf = '';
+const api = (u, o = {}) => {
+  const headers = { 'Content-Type': 'application/json', ...(o.headers || {}) };
+  if (_csrf) headers['X-CSRF-Token'] = _csrf;
+  return fetch(u, { headers, ...o }).then(async r => {
     let b = {};
     try { b = await r.json(); } catch (_) { /* non-json body */ }
     if (!r.ok) throw Error(b.error || 'HTTP ' + r.status);
     return b;
   });
+};
 
 function countryFlag(code) {
   const cc = (code || '').toUpperCase();
@@ -240,7 +244,8 @@ $('#back').onclick = () => { $('#dashboard').hidden = false; $('#admin-panel').h
 
 $('#login-btn').onclick = async () => {
   try {
-    await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) });
+    const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ username: $('#username').value, password: $('#password').value }) });
+    _csrf = r.csrf || '';
     $('#password').value = '';
     $('#login').hidden = true; $('#manage').hidden = false;
     lastAdminSig = '';
