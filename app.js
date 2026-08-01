@@ -162,12 +162,22 @@ function createCard(n, container) {
     const prow = e.querySelector('.ping-row');
     if (prow) {
       const icons = { ct: '电信', cu: '联通', cm: '移动' };
+      const lr = {};
+      if (n.ping_history) {
+        ['ct','cu','cm'].forEach(k => {
+          const last = n.ping_history.slice(-20);
+          if (!last.length) return;
+          const lost = last.filter(s => Number(s[k]) <= 0).length;
+          lr[k] = Math.round(lost / last.length * 100);
+        });
+      }
       prow.innerHTML = ['ct','cu','cm'].map(k => {
         const v = n['tcp_ping_' + k];
         if (!v) return '';
         const ms = Number(v);
         const cls = ms < 0 ? 'timeout' : ms <= 100 ? 'fast' : ms <= 300 ? 'mid' : 'slow';
-        return '<span class="ping ' + k + ' ' + cls + '"><i>' + icons[k] + '</i> ' + (ms < 0 ? '超时' : ms) + '</span>';
+        const loss = lr[k] !== undefined ? ' <em class="loss-' + (lr[k] === 0 ? 'ok' : lr[k] < 5 ? 'warn' : 'bad') + '">' + lr[k] + '%</em>' : '';
+        return '<span class="ping ' + k + ' ' + cls + '"><i>' + icons[k] + '</i> ' + (ms < 0 ? '超时' : ms) + loss + '</span>';
       }).join('');
     }
   container.append(e);
