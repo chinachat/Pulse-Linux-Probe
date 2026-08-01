@@ -92,21 +92,21 @@ function duration(s) {
 }
 function osIcon(os) {
   const s = (os || '').toLowerCase();
-  let slug = 'linux', label = 'Linux';
-  if (s.includes('debian')) { slug = 'debian'; label = 'Debian'; }
-  else if (s.includes('ubuntu')) { slug = 'ubuntu'; label = 'Ubuntu'; }
-  else if (s.includes('centos')) { slug = 'centos'; label = 'CentOS'; }
-  else if (s.includes('rocky')) { slug = 'rockylinux'; label = 'Rocky'; }
-  else if (s.includes('alma')) { slug = 'almalinux'; label = 'Alma'; }
-  else if (s.includes('rhel') || s.includes('redhat')) { slug = 'redhat'; label = 'RHEL'; }
-  else if (s.includes('fedora')) { slug = 'fedora'; label = 'Fedora'; }
-  else if (s.includes('arch')) { slug = 'archlinux'; label = 'Arch'; }
-  else if (s.includes('alpine')) { slug = 'alpinelinux'; label = 'Alpine'; }
-  else if (s.includes('opensuse') || s.includes('suse')) { slug = 'opensuse'; label = 'openSUSE'; }
+  let cls = 'other', label = 'Linux';
+  if (s.includes('debian')) { cls = 'debian'; label = 'Debian'; }
+  else if (s.includes('ubuntu')) { cls = 'ubuntu'; label = 'Ubuntu'; }
+  else if (s.includes('centos')) { cls = 'centos'; label = 'CentOS'; }
+  else if (s.includes('rocky')) { cls = 'rocky'; label = 'Rocky'; }
+  else if (s.includes('alma')) { cls = 'alma'; label = 'Alma'; }
+  else if (s.includes('rhel') || s.includes('redhat')) { cls = 'redhat'; label = 'RHEL'; }
+  else if (s.includes('fedora')) { cls = 'fedora'; label = 'Fedora'; }
+  else if (s.includes('arch')) { cls = 'arch'; label = 'Arch'; }
+  else if (s.includes('alpine')) { cls = 'alpine'; label = 'Alpine'; }
+  else if (s.includes('opensuse') || s.includes('suse')) { cls = 'suse'; label = 'openSUSE'; }
   const m = os.match(/\d+/);
   const ver = m ? ' ' + m[0] : '';
-  const src = 'https://cdn.jsdelivr.net/npm/simple-icons@14/icons/' + slug + '.svg';
-  return '<img src="' + src + '" class="os-svg" onerror="this.remove()"><span class="os-label">' + label + ver + '</span>';
+  const src = 'https://cdn.jsdelivr.net/npm/simple-icons@14/icons/' + cls.replace('rocky','rockylinux').replace('alma','almalinux').replace('arch','archlinux').replace('alpine','alpinelinux').replace('suse','opensuse') + '.svg';
+  return '<span class="os-tag ' + cls + '"><img src="' + src + '" class="os-svg" onerror="this.remove()"><b>' + label + '</b>' + ver + '</span>';
 }
 function bytes(v) {
   v = Number(v) || 0;
