@@ -92,7 +92,8 @@ function createCard(n, container) {
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.ping').textContent = n.tcp_ping ? (n.tcp_ping < 0 ? '超时' : n.tcp_ping + 'ms') : '';
+    const ping = e.querySelector('.ping');
+    if (ping) ping.textContent = n.tcp_ping ? (n.tcp_ping < 0 ? '超时' : n.tcp_ping + 'ms') : '';
   e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
   container.append(e);
   const card = container.lastElementChild;
