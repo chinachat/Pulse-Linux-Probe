@@ -90,6 +90,20 @@ function duration(s) {
   const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
   return `${h}小时 ${m}分`;
 }
+function osIcon(os) {
+  const s = (os || '').toLowerCase();
+  let cls = 'other', label = 'Linux';
+  if (s.includes('debian')) { cls = 'debian'; label = 'Debian'; }
+  else if (s.includes('ubuntu')) { cls = 'ubuntu'; label = 'Ubuntu'; }
+  else if (s.includes('centos') || s.includes('rocky') || s.includes('alma') || s.includes('rhel')) { cls = 'centos'; label = 'CentOS'; }
+  else if (s.includes('fedora')) { cls = 'fedora'; label = 'Fedora'; }
+  else if (s.includes('arch')) { cls = 'arch'; label = 'Arch'; }
+  else if (s.includes('alpine')) { cls = 'alpine'; label = 'Alpine'; }
+  else if (s.includes('opensuse') || s.includes('suse')) { cls = 'suse'; label = 'openSUSE'; }
+  const m = os.match(/\d+/);
+  const ver = m ? ' ' + m[0] : '';
+  return '<i class="os-icon ' + cls + '">' + label + '</i>' + ver;
+}
 function bytes(v) {
   v = Number(v) || 0;
   if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
@@ -123,7 +137,7 @@ function createCard(n, container) {
   e.querySelector('.ip').textContent = n.ip;
   e.querySelector('i').className = n.online ? '' : 'offline';
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
-  e.querySelector('.os').textContent = n.os || '系统未知';
+    e.querySelector('.os').innerHTML = osIcon(n.os);
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
     const icons = { ct: '电信', cu: '联通', cm: '移动' };
     ['ct','cu','cm'].forEach(k => {
