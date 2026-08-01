@@ -209,17 +209,13 @@ function render(nodes) {
   // online groups
   Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc), groups[cc]));
   if (offline.length) addGroup('离线节点', offline, true);
+  // in-page controls
+  const ctrl = document.createElement('div'); ctrl.className = 'group-controls';
+  ctrl.innerHTML = '<button class="small">全部展开</button><button class="small">全部收起</button>';
+  ctrl.children[0].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
+  ctrl.children[1].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed')); const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; }); localStorage.setItem('probe-groups', JSON.stringify(all)); };
+  box.insertBefore(ctrl, box.firstChild);
   updateGroupNav();
-  // nav controls
-  const nav = $('#group-nav');
-  if (nav) {
-    nav.querySelectorAll('.nav-ctrl').forEach(el => el.remove());
-    const nc = document.createElement('div'); nc.className = 'nav-ctrl';
-    nc.innerHTML = '<a>&#9654;展开</a><a>&#9660;收起</a>';
-    nc.children[0].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
-    nc.children[1].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed')); const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; }); localStorage.setItem('probe-groups', JSON.stringify(all)); };
-    nav.insertBefore(nc, nav.firstChild);
-  }
 }
 let _lastNodes = null;
 let _lastNodesSig = '';
@@ -449,7 +445,7 @@ function updateGroupNav() {
   const nav = $('#group-nav');
   if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }
   nav.style.display = '';
-  nav.querySelectorAll('.nav-group,.nav-node').forEach(el => el.remove());
+  nav.querySelectorAll('.nav-group,.nav-node,.nav-ctrl').forEach(el => el.remove());
   document.querySelectorAll('.group').forEach(g => {
     const b = g.querySelector('.group-header b');
     if (!b) return;
@@ -470,6 +466,7 @@ function updateGroupNav() {
   document.querySelectorAll('.group').forEach(g => navObserver.observe(g));
 }
 $('#group-nav .nav-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
+$('#nav-toggle').onclick = () => $('#group-nav').classList.toggle('visible');
 const navObserver = new IntersectionObserver((entries) => {
   entries.forEach(e => {
     if (!e.isIntersecting) return;
