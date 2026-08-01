@@ -17,35 +17,36 @@ function mbpsNum(value) {
 }
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
-function pingChart(canvas, history = []) {
-  const w = 270, h = 48, d = devicePixelRatio || 1, c = canvas.getContext('2d');
-  const pw = (parseInt(canvas.style.width) || w);
-  canvas.width = pw * d; canvas.height = h * d; c.scale(d, d);
+function pingChart(svg, history = []) {
+  const w = 600, h = 48, pad = 4;
   const samples = history.slice(-60);
   if (!samples.length) return;
   const all = samples.flatMap(s => ['ct','cu','cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
   const peak = Math.max(1, ...all);
   if (!all.length) return;
-  const py = v => h - 6 - (Number(v) || 0) / peak * (h - 14);
+  const py = v => h - pad - (Number(v) || 0) / peak * (h - pad * 2);
   const colors = { ct: '#2979FF', cu: '#E64A19', cm: '#00C853' };
-  const grid = getComputedStyle(document.body).getPropertyValue('--line');
-  // Y-axis grid lines
-  c.strokeStyle = grid;
-  [[1, []], [0.5, [3,3]]].forEach(([f, dash]) => {
-    c.setLineDash(dash);
-    c.beginPath(); c.moveTo(0, py(peak * f)); c.lineTo(pw, py(peak * f)); c.stroke();
-    c.setLineDash([]);
+  const px = i => (samples.length > 1 ? i * w / (samples.length - 1) : w / 2);
+  let html = '';
+  // grid lines
+  [[1, '3'], [0.5, '3,3']].forEach(([f, dash]) => {
+    html += '<line x1="0" y1="' + py(peak * f) + '" x2="' + w + '" y2="' + py(peak * f) + '" stroke="var(--line)" stroke-dasharray="' + dash + '"/>';
   });
   // baseline
-  c.beginPath(); c.moveTo(0, h - 4); c.lineTo(pw, h - 4); c.stroke();
+  html += '<line x1="0" y1="' + (h - pad) + '" x2="' + w + '" y2="' + (h - pad) + '" stroke="var(--line)"/>';
   // curves
   ['ct','cu','cm'].forEach(key => {
-    c.beginPath();
-    samples.forEach((s, i) => { const v = Number(s[key]) || 0; if (!v) return; const x = 0 + (samples.length > 1 ? i * pw / (samples.length - 1) : pw / 2); i ? c.lineTo(x, py(v)) : c.moveTo(0, py(v)); });
-    c.strokeStyle = colors[key]; c.lineWidth = 1.5; c.stroke();
+    let d = '';
+    samples.forEach((s, i) => {
+      const v = Number(s[key]) || 0;
+      if (!v) return;
+      d += (d ? 'L' : 'M') + px(i).toFixed(1) + ' ' + py(v).toFixed(1);
+    });
+    if (d) html += '<path d="' + d + '" fill="none" stroke="' + colors[key] + '" stroke-width="1.5" vector-effect="non-scaling-stroke"/>';
   });
-  // Y-axis HTML labels
-  const axis = canvas.parentElement.querySelector('.y-axis');
+  svg.innerHTML = html;
+  // Y-axis labels
+  const axis = svg.parentElement.querySelector('.y-axis');
   if (axis) {
     const spans = axis.querySelectorAll('span');
     if (spans[0]) spans[0].textContent = peak;
@@ -174,8 +175,8 @@ function createCard(n, container) {
     x.querySelector('b').textContent = v + '%';
     x.querySelector('small').textContent = [n.cpu_cores ? n.cpu_cores + '核' : '', bytes(n.mem_total), bytes(n.disk_total)][i];
   });
-  const pc = card.querySelector('.ping-chart canvas');
-  if (pc && n.ping_history) { pc.style.width = (card.clientWidth - 28) + 'px'; pingChart(pc, n.ping_history); }
+  const ps = card.querySelector('.ping-svg');
+  if (ps && n.ping_history) pingChart(ps, n.ping_history);
 }
 function render(nodes) {
   $('#online').textContent = nodes.filter(n => n.online).length;
