@@ -18,7 +18,7 @@ function mbpsNum(value) {
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
 function pingChart(canvas, history = []) {
-  const w = 270, h = 36, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const w = 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   const parentW = canvas.parentElement.clientWidth;
   const pw = (parentW || w);
   canvas.width = pw * d; canvas.height = h * d; canvas.style.width = pw + 'px';
@@ -30,11 +30,18 @@ function pingChart(canvas, history = []) {
   const all = samples.flatMap(s => ['ct','cu','cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
   const peak = Math.max(1, ...all);
   if (!all.length) return;
-  const py = v => h - 4 - (Number(v) || 0) / peak * (h - 8);
+  const py = v => h - 6 - (Number(v) || 0) / peak * (h - 14);
+  const cs = getComputedStyle(document.body);
+  const muted = cs.getPropertyValue('--muted'), grid = cs.getPropertyValue('--line');
   c.font = "8px 'DM Mono', monospace";
-  c.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
-  c.fillText(peak + 'ms', 0, 10);
-  c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
+  [[1, []], [0.5, [3,3]], [0.25, [1,2]]].forEach(([f, dash]) => {
+    c.strokeStyle = grid; c.setLineDash(dash);
+    const y = py(peak * f);
+    c.beginPath(); c.moveTo(ml, y); c.lineTo(pw, y); c.stroke();
+    c.setLineDash([]);
+    c.fillStyle = muted; c.fillText(Math.round(peak * f), 0, y + 3);
+  });
+  c.strokeStyle = grid;
   c.beginPath(); c.moveTo(ml, h - 4); c.lineTo(pw, h - 4); c.stroke();
   ['ct','cu','cm'].forEach(key => {
     const color = colors[key];
@@ -129,7 +136,7 @@ function createCard(n, container) {
       el.innerHTML = '<i>' + icons[k] + '</i> ' + ms;
       el.className = 'ping ' + k + (ms <= 100 ? ' fast' : ms <= 300 ? ' mid' : ' slow');
     });
-  e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
+    e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
   container.append(e);
   const card = container.lastElementChild;
   card.querySelectorAll('.metrics div').forEach((x, i) => {
@@ -141,7 +148,6 @@ function createCard(n, container) {
     gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
     x.querySelector('b').textContent = '';
   });
-  networkChart(card.querySelector('.network-chart canvas'), n.history, n);
   const pc = card.querySelector('.ping-chart canvas');
   if (pc && n.ping_history) pingChart(pc, n.ping_history);
 }
