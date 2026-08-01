@@ -117,14 +117,15 @@ function createCard(n, container) {
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+    const icons = { ct: '电信', cu: '联通', cm: '移动' };
     ['ct','cu','cm'].forEach(k => {
       const el = e.querySelector('.ping.' + k);
       if (!el) return;
       const v = n['tcp_ping_' + k];
-      if (!v) { el.textContent = ''; el.className = 'ping ' + k; return; }
+      if (!v) { el.innerHTML = ''; el.className = 'ping ' + k; return; }
       const ms = Number(v);
-      if (ms < 0) { el.textContent = k.toUpperCase(); el.className = 'ping ' + k + ' timeout'; return; }
-      el.textContent = k.toUpperCase() + ' ' + ms;
+      if (ms < 0) { el.innerHTML = '<i>' + icons[k] + '</i> 超时'; el.className = 'ping ' + k + ' timeout'; return; }
+      el.innerHTML = '<i>' + icons[k] + '</i> ' + ms;
       el.className = 'ping ' + k + (ms <= 100 ? ' fast' : ms <= 300 ? ' mid' : ' slow');
     });
   e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
