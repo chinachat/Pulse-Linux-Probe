@@ -165,7 +165,7 @@ function createCard(n, container) {
       const lr = {};
       if (n.ping_history) {
         ['ct','cu','cm'].forEach(k => {
-          const last = n.ping_history.slice(-20);
+          const last = n.ping_history;
           if (!last.length) return;
           const lost = last.filter(s => Number(s[k]) <= 0).length;
           lr[k] = Math.round(lost / last.length * 100);
