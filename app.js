@@ -92,8 +92,16 @@ function createCard(n, container) {
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.os').textContent = n.os || '系统未知';
     e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    const ping = e.querySelector('.ping');
-    if (ping) ping.textContent = n.tcp_ping ? (n.tcp_ping < 0 ? '超时' : n.tcp_ping + 'ms') : '';
+    ['ct','cu','cm'].forEach(k => {
+      const el = e.querySelector('.ping.' + k);
+      if (!el) return;
+      const v = n['tcp_ping_' + k];
+      if (!v) { el.textContent = ''; return; }
+      const ms = Number(v);
+      if (ms < 0) { el.textContent = k.toUpperCase() + ' 超时'; el.style.color = '#f97316'; return; }
+      el.textContent = k.toUpperCase() + ' ' + ms + 'ms';
+      el.style.color = ms <= 100 ? '#10b981' : ms <= 300 ? '#eab308' : '#ef4444';
+    });
   e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
   container.append(e);
   const card = container.lastElementChild;
@@ -321,8 +329,7 @@ function renderBlocked(blocked) {
 }
 function renderSettings(s) {
   const u = $('#admin-user'); if (u && document.activeElement !== u) u.value = s.admin_user || '';
-  const h = $('#ping-host'); if (h && document.activeElement !== h) h.value = s.ping_host || '';
-  const p = $('#ping-port'); if (p && document.activeElement !== p) p.value = s.ping_port || '';
+  ['ct','cu','cm'].forEach(k => { const el = $('#ping-' + k); if (el && document.activeElement !== el) el.value = s['ping_' + k] || ''; });
 }
 $('#new-key').onclick = async () => {
   try {
@@ -341,7 +348,9 @@ $('#save-user').onclick = async () => {
 const sp = $('#save-ping');
 if (sp) sp.onclick = async () => {
   try {
-    await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ ping_host: $('#ping-host').value.trim(), ping_port: $('#ping-port').value.trim() }) });
+    const body = {};
+    ['ct','cu','cm'].forEach(k => { const v = $('#ping-' + k).value.trim(); if (v) body['ping_' + k] = v; });
+    await api('/api/admin/settings', { method: 'POST', body: JSON.stringify(body) });
     alert('Ping 目标已保存，请重新生成客户端安装命令');
     loadAdmin();
   } catch (e) { alert(e.message); }

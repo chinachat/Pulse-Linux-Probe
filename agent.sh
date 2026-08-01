@@ -57,15 +57,12 @@ fi
 cpu_cores=$(nproc 2>/dev/null || grep -c processor /proc/cpuinfo 2>/dev/null || echo 0)
 mem_total=$(awk '/MemTotal/ {print $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
 disk_total=$(df -P / | awk 'NR==2 {print $2*1024}' 2>/dev/null || echo 0)
-# TCP ping
-PING_HOST="__PING_HOST__"
-PING_PORT="__PING_PORT__"
-tcp_ping=0
-if test -n "$PING_HOST" && test -n "$PING_PORT"; then
-  s=$(date +%s%N)
-  timeout 3 bash -c "exec 3<>/dev/tcp/\$1/\$2 2>/dev/null; exec 3>&-" _ "$PING_HOST" "$PING_PORT" 2>/dev/null && tcp_ping=$(( ($(date +%s%N) - s) / 1000000 )) || tcp_ping=-1
-fi
-printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping"
+# TCP pings
+do_ping() { local h=${1%%:*} p=${1##*:}; test -n "$h" && test -n "$p" || { echo 0; return; }; local s=$(date +%s%N); timeout 3 bash -c "exec 3<>/dev/tcp/\$1/\$2 2>/dev/null; exec 3>&-" _ "$h" "$p" 2>/dev/null && echo $(( ($(date +%s%N) - s) / 1000000 )) || echo -1; }
+tcp_ping_ct=$(do_ping "__PING_CT__")
+tcp_ping_cu=$(do_ping "__PING_CU__")
+tcp_ping_cm=$(do_ping "__PING_CM__")
+printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload
 report="$(/usr/local/bin/linux-probe-payload)"
