@@ -150,6 +150,7 @@ function createCard(n, container) {
   e.querySelector('.ip').textContent = n.ip;
   e.querySelector('i').className = n.online ? '' : 'offline';
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
+  e.querySelector('.status').className = 'status ' + (n.online ? 'on' : 'off');
     e.querySelector('.os').innerHTML = osIcon(n.os);
     e.querySelector('.uptime').innerHTML = '<span class="tag">运行 ' + duration(n.uptime) + '</span>';
     e.querySelector('.traffic').innerHTML = '<span class="tag">流量</span> ' + bytesTotal(n.net_total_rx, n.net_total_tx);
