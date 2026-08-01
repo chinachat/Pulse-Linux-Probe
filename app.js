@@ -96,11 +96,11 @@ function createCard(n, container) {
       const el = e.querySelector('.ping.' + k);
       if (!el) return;
       const v = n['tcp_ping_' + k];
-      if (!v) { el.textContent = ''; return; }
+      if (!v) { el.textContent = ''; el.className = 'ping ' + k; return; }
       const ms = Number(v);
-      if (ms < 0) { el.textContent = k.toUpperCase() + ' 超时'; el.style.color = '#f97316'; return; }
-      el.textContent = k.toUpperCase() + ' ' + ms + 'ms';
-      el.style.color = ms <= 100 ? '#10b981' : ms <= 300 ? '#eab308' : '#ef4444';
+      if (ms < 0) { el.textContent = k.toUpperCase(); el.className = 'ping ' + k + ' timeout'; return; }
+      el.textContent = k.toUpperCase() + ' ' + ms;
+      el.className = 'ping ' + k + (ms <= 100 ? ' fast' : ms <= 300 ? ' mid' : ' slow');
     });
   e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
   container.append(e);
