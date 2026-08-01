@@ -176,8 +176,9 @@ function createCard(n, container) {
         if (!v) return '';
         const ms = Number(v);
         const cls = ms < 0 ? 'timeout' : ms <= 100 ? 'fast' : ms <= 300 ? 'mid' : 'slow';
-        const loss = lr[k] !== undefined ? ' <em class="loss-' + (lr[k] === 0 ? 'ok' : lr[k] < 5 ? 'warn' : 'bad') + '">' + lr[k] + '%</em>' : '';
-        return '<span class="ping ' + k + ' ' + cls + '"><i>' + icons[k] + '</i> ' + (ms < 0 ? '超时' : ms) + loss + '</span>';
+        const badge = '<span class="ping ' + k + ' ' + cls + '"><i>' + icons[k] + '</i> ' + (ms < 0 ? '超时' : ms) + '</span>';
+        const loss = lr[k] !== undefined ? '<em class="loss loss-' + (lr[k] === 0 ? 'ok' : lr[k] < 5 ? 'warn' : 'bad') + '">' + lr[k] + '%</em>' : '';
+        return badge + loss;
       }).join('');
     }
   container.append(e);
