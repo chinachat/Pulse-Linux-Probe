@@ -449,7 +449,7 @@ function updateGroupNav() {
   const nav = $('#group-nav');
   if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }
   nav.style.display = '';
-  nav.querySelectorAll('.nav-group').forEach(el => el.remove());
+  nav.querySelectorAll('.nav-group,.nav-node').forEach(el => el.remove());
   document.querySelectorAll('.group').forEach(g => {
     const b = g.querySelector('.group-header b');
     if (!b) return;
@@ -458,6 +458,14 @@ function updateGroupNav() {
     a.innerHTML = b.innerHTML;
     a.onclick = () => g.scrollIntoView({ behavior: 'smooth', block: 'start' });
     nav.insertBefore(a, nav.querySelector('.nav-top'));
+    // node anchors
+    g.querySelectorAll('.node-row strong').forEach(s => {
+      const na = document.createElement('a');
+      na.className = 'nav-node';
+      na.textContent = s.textContent;
+      na.onclick = (e) => { e.stopPropagation(); s.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+      nav.insertBefore(na, nav.querySelector('.nav-top'));
+    });
   });
   document.querySelectorAll('.group').forEach(g => navObserver.observe(g));
 }
