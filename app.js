@@ -206,16 +206,20 @@ function render(nodes) {
     };
     g.append(h, c); box.appendChild(g);
   }
-  // controls
-  const ctrl = document.createElement('div'); ctrl.className = 'group-controls';
-  ctrl.innerHTML = '<button class="small">全部展开</button><button class="small">全部收起</button>';
-  ctrl.children[0].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
-  ctrl.children[1].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed')); const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; }); localStorage.setItem('probe-groups', JSON.stringify(all)); };
-  box.appendChild(ctrl);
   // online groups
-  Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc) + ' ' + cc, groups[cc]));
+  Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc), groups[cc]));
   if (offline.length) addGroup('离线节点', offline, true);
   updateGroupNav();
+  // nav controls
+  const nav = $('#group-nav');
+  if (nav) {
+    nav.querySelectorAll('.nav-ctrl').forEach(el => el.remove());
+    const nc = document.createElement('div'); nc.className = 'nav-ctrl';
+    nc.innerHTML = '<a>&#9654;展开</a><a>&#9660;收起</a>';
+    nc.children[0].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
+    nc.children[1].onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed')); const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; }); localStorage.setItem('probe-groups', JSON.stringify(all)); };
+    nav.insertBefore(nc, nav.firstChild);
+  }
 }
 let _lastNodes = null;
 let _lastNodesSig = '';
