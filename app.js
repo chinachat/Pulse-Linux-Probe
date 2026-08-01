@@ -319,9 +319,9 @@ function renderBlocked(blocked) {
   });
 }
 function renderSettings(s) {
-  if (document.activeElement !== $('#admin-user')) $('#admin-user').value = s.admin_user || '';
-  if (document.activeElement !== $('#ping-host')) $('#ping-host').value = s.ping_host || '';
-  if (document.activeElement !== $('#ping-port')) $('#ping-port').value = s.ping_port || '';
+  const u = $('#admin-user'); if (u && document.activeElement !== u) u.value = s.admin_user || '';
+  const h = $('#ping-host'); if (h && document.activeElement !== h) h.value = s.ping_host || '';
+  const p = $('#ping-port'); if (p && document.activeElement !== p) p.value = s.ping_port || '';
 }
 $('#new-key').onclick = async () => {
   try {
@@ -337,7 +337,8 @@ $('#save-user').onclick = async () => {
     loadAdmin();
   } catch (e) { alert(e.message); }
 };
-$('#save-ping').onclick = async () => {
+const sp = $('#save-ping');
+if (sp) sp.onclick = async () => {
   try {
     await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ ping_host: $('#ping-host').value.trim(), ping_port: $('#ping-port').value.trim() }) });
     alert('Ping 目标已保存，请重新生成客户端安装命令');
