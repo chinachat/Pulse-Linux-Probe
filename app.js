@@ -91,7 +91,8 @@ function createCard(n, container) {
   e.querySelector('i').className = n.online ? '' : 'offline';
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.os').textContent = n.os || '系统未知';
-  e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+    e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
+    e.querySelector('.ping').textContent = n.tcp_ping ? (n.tcp_ping < 0 ? '超时' : n.tcp_ping + 'ms') : '';
   e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
   container.append(e);
   const card = container.lastElementChild;
@@ -317,8 +318,9 @@ function renderBlocked(blocked) {
   });
 }
 function renderSettings(s) {
-  // 光标正停在用户名输入框时跳过赋值，避免自动刷新冲掉正在输入的新用户名
   if (document.activeElement !== $('#admin-user')) $('#admin-user').value = s.admin_user || '';
+  if (document.activeElement !== $('#ping-host')) $('#ping-host').value = s.ping_host || '';
+  if (document.activeElement !== $('#ping-port')) $('#ping-port').value = s.ping_port || '';
 }
 $('#new-key').onclick = async () => {
   try {
@@ -331,6 +333,13 @@ $('#save-user').onclick = async () => {
   try {
     await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ admin_user: $('#admin-user').value.trim() }) });
     alert('管理员用户名已更新，下次登录请使用新用户名');
+    loadAdmin();
+  } catch (e) { alert(e.message); }
+};
+$('#save-ping').onclick = async () => {
+  try {
+    await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ ping_host: $('#ping-host').value.trim(), ping_port: $('#ping-port').value.trim() }) });
+    alert('Ping 目标已保存，请重新生成客户端安装命令');
     loadAdmin();
   } catch (e) { alert(e.message); }
 };

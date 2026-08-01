@@ -192,7 +192,7 @@ class App(SimpleHTTPRequestHandler):
                 self.send_json({"blocked": blocked})
             return
         if path == "/api/admin/settings":
-            if self.require_admin(): self.send_json({"admin_user": admin_user()})
+            if self.require_admin(): self.send_json({"admin_user": admin_user(), "ping_host": DATA["settings"].get("ping_host", ""), "ping_port": DATA["settings"].get("ping_port", "")})
             return
         if path == "/api/install.sh":
             if not self.require_admin(): return
@@ -202,7 +202,9 @@ class App(SimpleHTTPRequestHandler):
             if not PUBLIC_URL and not HOST_RE.fullmatch(host):
                 return self.send_json({"error": "invalid host header"}, 400)
             origin = PUBLIC_URL or f"http://{host}"
-            script = get_agent_script().replace("__SERVER__", origin).replace("__API_KEY__", key)
+            ping_host = DATA["settings"].get("ping_host", "")
+            ping_port = str(DATA["settings"].get("ping_port", ""))
+            script = get_agent_script().replace("__SERVER__", origin).replace("__API_KEY__", key).replace("__PING_HOST__", ping_host).replace("__PING_PORT__", ping_port)
             return self.send_json({"script": script})
         name = "index.html" if path in ("/", "/admin") else path.lstrip("/")
         if name not in STATIC_FILES:
@@ -315,13 +317,20 @@ class App(SimpleHTTPRequestHandler):
             return self.send_json({"ok": True})
         if path == "/api/admin/settings":
             name = str(body.get("admin_user", "")).strip()
-            if not (1 <= len(name) <= 60):
+            if name and not (1 <= len(name) <= 60):
                 return self.send_json({"error": "username must be 1-60 chars"}, 400)
+            if "ping_port" in body:
+                port = str(body.get("ping_port", ""))
+                if port and not port.isdigit():
+                    return self.send_json({"error": "port must be numeric"}, 400)
             with LOCK:
-                DATA["settings"]["admin_user"] = name
+                if name: DATA["settings"]["admin_user"] = name
+                if "ping_host" in body: DATA["settings"]["ping_host"] = str(body.get("ping_host", ""))[:120]
+                if "ping_port" in body: DATA["settings"]["ping_port"] = str(body.get("ping_port", ""))
                 save_data(force=True)
-            log.info("admin username changed to %r", name)
-            return self.send_json({"ok": True, "admin_user": name})
+            log.info("admin settings updated")
+            return self.send_json({"ok": True, "admin_user": admin_user(),
+                "ping_host": DATA["settings"].get("ping_host", ""), "ping_port": DATA["settings"].get("ping_port", "")})
         return self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
