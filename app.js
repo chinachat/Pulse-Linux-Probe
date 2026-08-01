@@ -42,7 +42,8 @@ function pingChart(canvas, history = []) {
     samples.forEach((s, i) => { const v = Number(s[key]) || 0; if (!v) return; i ? c.lineTo(px(i), py(v)) : c.moveTo(px(0), py(v)); });
     c.strokeStyle = color; c.lineWidth = 1.5; c.stroke();
   });
-}(canvas, history = [], current = {}) {
+}
+function networkChart(canvas, history = [], current = {}) {
   const parentW = canvas.parentElement.clientWidth;
   const w = parentW || 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   canvas.width = w * d; canvas.height = h * d; c.scale(d, d);
