@@ -18,11 +18,9 @@ function mbpsNum(value) {
 function mbps(value) { return mbpsNum(value) + ' Mbps'; }
 
 function pingChart(canvas, history = []) {
-  const w = 270, h = 64, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
-  const parentW = canvas.parentElement.clientWidth;
-  const pw = (parentW || w);
-  canvas.width = pw * d; canvas.height = h * d; canvas.style.width = pw + 'px';
-  c.scale(d, d);
+  const w = 270, h = 40, ml = 34, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const pw = (parseInt(canvas.style.width) || w);
+  canvas.width = pw * d; canvas.height = h * d; c.scale(d, d);
   const samples = history.slice(-60);
   if (!samples.length) return;
   const colors = { ct: '#2979FF', cu: '#E64A19', cm: '#00C853' };
@@ -147,8 +145,8 @@ function createCard(n, container) {
   e.querySelector('i').className = n.online ? '' : 'offline';
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
     e.querySelector('.os').innerHTML = osIcon(n.os);
-    e.querySelector('.uptime').textContent = '运行 ' + duration(n.uptime);
-    e.querySelector('.traffic').textContent = bytesTotal(n.net_total_rx, n.net_total_tx);
+    e.querySelector('.uptime').innerHTML = '<span class="tag">运行 ' + duration(n.uptime) + '</span>';
+    e.querySelector('.traffic').innerHTML = '<span class="tag">流量</span> ' + bytesTotal(n.net_total_rx, n.net_total_tx);
     e.querySelector('.net').textContent = mbps(n.network_rx) + ' ↓ / ' + mbps(n.network_tx) + ' ↑';
     const prow = e.querySelector('.ping-row');
     if (prow) {
@@ -172,7 +170,7 @@ function createCard(n, container) {
     x.querySelector('small').textContent = [n.cpu_cores ? n.cpu_cores + '核' : '', bytes(n.mem_total), bytes(n.disk_total)][i];
   });
   const pc = card.querySelector('.ping-chart canvas');
-  if (pc && n.ping_history) pingChart(pc, n.ping_history);
+  if (pc && n.ping_history) { pc.style.width = (card.clientWidth - 28) + 'px'; pingChart(pc, n.ping_history); }
 }
 function render(nodes) {
   $('#online').textContent = nodes.filter(n => n.online).length;
