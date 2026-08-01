@@ -122,20 +122,20 @@ function bytes(v) {
 }
 function gauge(canvas, v, label, sub) {
   const c = canvas.getContext('2d'), d = devicePixelRatio || 1;
-  c.canvas.width = c.canvas.height = 62 * d; c.scale(d, d); c.lineWidth = 6;
+  c.canvas.width = c.canvas.height = 40 * d; c.scale(d, d); c.lineWidth = 5;
   c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
-  c.beginPath(); c.arc(31, 31, 25, -1.57, 4.71); c.stroke();
+  c.beginPath(); c.arc(20, 20, 16, -1.57, 4.71); c.stroke();
   c.strokeStyle = v > 80 ? '#f97316' : '#10b981';
-  c.beginPath(); c.arc(31, 31, 25, -1.57, 4.71 * v / 100 - 1.57); c.stroke();
+  c.beginPath(); c.arc(20, 20, 16, -1.57, 4.71 * v / 100 - 1.57); c.stroke();
   const cs = getComputedStyle(document.body);
   c.fillStyle = cs.getPropertyValue('--text');
-  c.font = "bold 13px 'DM Mono', monospace";
+  c.font = "bold 10px 'DM Mono', monospace";
   c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillText(label, 31, sub ? 24 : 31);
+  c.fillText(label, 20, sub ? 17 : 20);
   if (sub) {
     c.fillStyle = cs.getPropertyValue('--muted');
-    c.font = "9px 'Noto Sans SC', sans-serif";
-    c.fillText(sub, 31, 40);
+    c.font = "7px 'Noto Sans SC', sans-serif";
+    c.fillText(sub, 20, 27);
   }
 }
 function createCard(n, container) {
@@ -163,14 +163,15 @@ function createCard(n, container) {
     }
   container.append(e);
   const card = container.lastElementChild;
-  card.querySelectorAll('.metrics div').forEach((x, i) => {
+  card.querySelectorAll('.mg').forEach((x, i) => {
     const labels = [
       [ms[0] + '%', n.cpu_cores ? n.cpu_cores + '核' : ''],
       [ms[1] + '%', n.mem_total ? bytes(n.mem_total) : ''],
       [ms[2] + '%', n.disk_total ? bytes(n.disk_total) : ''],
     ];
     gauge(x.querySelector('canvas'), ms[i] || 0, labels[i][0], labels[i][1]);
-    x.querySelector('b').textContent = '';
+    x.querySelector('b').textContent = labels[i][0];
+    x.querySelector('small').textContent = labels[i][1];
   });
   const pc = card.querySelector('.ping-chart canvas');
   if (pc && n.ping_history) pingChart(pc, n.ping_history);
