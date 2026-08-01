@@ -459,7 +459,23 @@ function updateGroupNav() {
       const na = document.createElement('a');
       na.className = 'nav-node';
       na.textContent = s.textContent;
-      na.onclick = (e) => { e.stopPropagation(); s.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+      na.onclick = (e) => {
+        e.stopPropagation();
+        const card = s.closest('.card');
+        const group = card.closest('.group');
+        if (group) {
+          const gc = group.querySelector('.group-content');
+          const gh = group.querySelector('.group-header');
+          if (gc.classList.contains('collapsed')) {
+            gc.classList.remove('collapsed'); gh.classList.remove('collapsed');
+            const key = (gh.querySelector('b') || {}).textContent || '';
+            const saved = JSON.parse(localStorage.getItem('probe-groups') || '{}');
+            delete saved[key.replace(/<[^>]+>/g, '').trim()];
+            localStorage.setItem('probe-groups', JSON.stringify(saved));
+          }
+        }
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      };
       nav.insertBefore(na, nav.querySelector('.nav-top'));
     });
   });
