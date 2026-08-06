@@ -41,7 +41,7 @@ class ServerTest(unittest.TestCase):
             shutil.copy(ROOT / name, cls.tmp / name)
         env = dict(os.environ, PORT=str(cls.PORT),
                    PROBE_ADMIN_PASSWORD="test-pass", PROBE_DATA_KEY="test-data-key",
-                   PROBE_TRUST_PROXY="1")
+                   PROBE_TRUST_PROXY="1", PROBE_MAX_NODES="50")
         cls.proc = subprocess.Popen([sys.executable, str(cls.tmp / "server.py")],
                                     cwd=cls.tmp, env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -65,9 +65,12 @@ class ServerTest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def login(self, password="test-pass"):
-        status, headers, _ = http(self.base, "POST", "/api/login",
-                                  {"username": "admin", "password": password})
-        return status, headers.get("Set-Cookie", "").split(";")[0]
+        status, headers, raw = http(self.base, "POST", "/api/login",
+                                    {"username": "admin", "password": password})
+        csrf = ""
+        if status == 200:
+            csrf = json.loads(raw).get("csrf", "")
+        return status, headers.get("Set-Cookie", "").split(";")[0], csrf
 
     def test_01_health(self):
         status, _, raw = http(self.base, "GET", "/api/health")
@@ -87,19 +90,20 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
     def test_04_bad_login(self):
-        status, _ = self.login("wrong-password")
+        status, _, _ = self.login("wrong-password")
         self.assertEqual(status, 401)
 
     def test_05_login_and_create_key(self):
-        status, cookie = self.login()
+        status, cookie, csrf = self.login()
         self.assertEqual(status, 200)
         status, _, raw = http(self.base, "POST", "/api/admin/keys",
-                              {"label": "ci"}, {"Cookie": cookie})
+                              {"label": "ci"}, {"Cookie": cookie, "X-CSRF-Token": csrf})
         self.assertEqual(status, 201)
         key = json.loads(raw)["key"]
         self.assertTrue(key.startswith("lp_"))
         type(self).key = key
         type(self).cookie = cookie
+        type(self).csrf = csrf
 
     def test_06_install_script(self):
         status, _, raw = http(self.base, "GET",
@@ -136,13 +140,14 @@ class ServerTest(unittest.TestCase):
     def test_09_rename_node(self):
         status, _, raw = http(self.base, "POST", "/api/admin/nodes",
                               {"id": self.node_id, "name": "renamed", "country": "JP"},
-                              {"Cookie": self.cookie})
+                              {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(raw)["name"], "renamed")
 
     def test_10_delete_node(self):
         status, _, _ = http(self.base, "DELETE",
-                            "/api/admin/nodes/" + self.node_id, headers={"Cookie": self.cookie})
+                            "/api/admin/nodes/" + self.node_id,
+                            headers={"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 200)
         _, _, raw = http(self.base, "GET", "/api/nodes")
         self.assertEqual(json.loads(raw)["nodes"], [])
@@ -152,7 +157,8 @@ class ServerTest(unittest.TestCase):
                               headers={"Cookie": self.cookie})
         key_id = json.loads(raw)["keys"][0]["id"]
         status, _, _ = http(self.base, "DELETE",
-                            "/api/admin/keys/" + key_id, headers={"Cookie": self.cookie})
+                            "/api/admin/keys/" + key_id,
+                            headers={"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 200)
         status, _, _ = http(self.base, "POST", "/api/report",
                             {"hostname": "x"}, {"X-API-Key": self.key})
@@ -160,7 +166,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 204)
 
     def test_12_logout(self):
-        status, cookie = self.login()
+        status, cookie, _ = self.login()
         self.assertEqual(status, 200)
         http(self.base, "POST", "/api/logout", {}, {"Cookie": cookie})
         status, _, _ = http(self.base, "GET", "/api/admin/keys",
@@ -171,7 +177,8 @@ class ServerTest(unittest.TestCase):
         # PROBE_TRUST_PROXY=1 is set in setUpClass: the node IP must come
         # from the first X-Forwarded-For entry, not the TCP peer.
         status, _, raw = http(self.base, "POST", "/api/admin/keys",
-                              {"label": "xff"}, {"Cookie": self.cookie})
+                              {"label": "xff"},
+                              {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 201)
         key = json.loads(raw)["key"]
         payload = {"hostname": "xff-node", "cpu": 1, "memory": 1, "disk": 1}
@@ -184,7 +191,8 @@ class ServerTest(unittest.TestCase):
 
     def test_14_block_and_unblock(self):
         status, _, raw = http(self.base, "POST", "/api/admin/keys",
-                              {"label": "blk"}, {"Cookie": self.cookie})
+                              {"label": "blk"},
+                              {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 201)
         key = json.loads(raw)["key"]
         payload = {"hostname": "block-node", "cpu": 1, "memory": 1, "disk": 1}
@@ -194,7 +202,8 @@ class ServerTest(unittest.TestCase):
         node_id = json.loads(raw)["id"]
         # deleting the node blocks it, with metadata kept for the admin list
         status, _, _ = http(self.base, "DELETE",
-                            "/api/admin/nodes/" + node_id, headers={"Cookie": self.cookie})
+                            "/api/admin/nodes/" + node_id,
+                            headers={"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 200)
         status, _, raw = http(self.base, "GET", "/api/admin/blocked",
                               headers={"Cookie": self.cookie})
@@ -208,14 +217,15 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 204)
         # after unblocking, the node can report again
         status, _, _ = http(self.base, "POST", "/api/admin/unblock",
-                            {"id": node_id}, {"Cookie": self.cookie})
+                            {"id": node_id},
+                            {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
         self.assertEqual(status, 200)
         status, _, _ = http(self.base, "POST", "/api/report", payload,
                             {"X-API-Key": key})
         self.assertEqual(status, 200)
 
     def test_15_change_admin_username(self):
-        status, cookie = self.login()
+        status, cookie, csrf = self.login()
         self.assertEqual(status, 200)
         # settings endpoint reports the current admin username
         status, _, raw = http(self.base, "GET", "/api/admin/settings",
@@ -225,15 +235,17 @@ class ServerTest(unittest.TestCase):
         # empty / overlong names are rejected
         for bad in ("", "x" * 61):
             status, _, _ = http(self.base, "POST", "/api/admin/settings",
-                                {"admin_user": bad}, {"Cookie": cookie})
+                                {"admin_user": bad},
+                                {"Cookie": cookie, "X-CSRF-Token": csrf})
             self.assertEqual(status, 400, repr(bad))
         # change to a new username
         status, _, raw = http(self.base, "POST", "/api/admin/settings",
-                              {"admin_user": "root-admin"}, {"Cookie": cookie})
+                              {"admin_user": "root-admin"},
+                              {"Cookie": cookie, "X-CSRF-Token": csrf})
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(raw)["admin_user"], "root-admin")
         # the old username no longer works
-        status, _ = self.login()
+        status, _, _ = self.login()
         self.assertEqual(status, 401)
         # the new username works (a success also clears the rate-limit counter)
         status, _, _ = http(self.base, "POST", "/api/login",
@@ -241,14 +253,59 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         # restore the default for the remaining tests
         status, _, _ = http(self.base, "POST", "/api/admin/settings",
-                            {"admin_user": "admin"}, {"Cookie": cookie})
+                            {"admin_user": "admin"},
+                            {"Cookie": cookie, "X-CSRF-Token": csrf})
         self.assertEqual(status, 200)
+
+    def test_16_ping_target_validation(self):
+        # 注入载荷/非法格式必须被拒绝（这是命令注入的第一道防线）
+        for bad in ('8.8.8.8:53"; touch /tmp/PULSE_PWNED; echo "',
+                    "1.1.1.1:99999", "no-port", "127.0.0.1", "1.1.1.1:80:90"):
+            status, _, raw = http(self.base, "POST", "/api/admin/settings",
+                                  {"ping_ct": bad},
+                                  {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
+            self.assertEqual(status, 400, (bad, raw))
+        # 合法 host:port 与空值（清空）允许
+        for good in ("1.1.1.1:80", "ping.example.com:443"):
+            status, _, _ = http(self.base, "POST", "/api/admin/settings",
+                                {"ping_ct": good},
+                                {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
+            self.assertEqual(status, 200, good)
+        status, _, _ = http(self.base, "POST", "/api/admin/settings",
+                            {"ping_ct": ""},
+                            {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
+        self.assertEqual(status, 200)
+
+    def test_17_node_limit(self):
+        # PROBE_MAX_NODES=50 在 setUpClass 中设置：第 51 个新节点必须被拒绝
+        status, _, raw = http(self.base, "POST", "/api/admin/keys",
+                              {"label": "flood"},
+                              {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
+        self.assertEqual(status, 201)
+        key = json.loads(raw)["key"]
+        last = None
+        for i in range(51):
+            status, _, raw = http(self.base, "POST", "/api/report",
+                                  {"hostname": f"flood-{i:03d}", "cpu": 1},
+                                  {"X-API-Key": key})
+            last = status
+        self.assertEqual(last, 429)  # 超出上限的新节点被拒
+        # 已存在的节点仍可继续上报
+        status, _, _ = http(self.base, "POST", "/api/report",
+                            {"hostname": "flood-000", "cpu": 2},
+                            {"X-API-Key": key})
+        self.assertEqual(status, 200)
+
+    def test_18_body_too_large(self):
+        status, _, _ = http(self.base, "POST", "/api/login",
+                            {"username": "a", "password": "b", "pad": "x" * 70000})
+        self.assertEqual(status, 413)
 
     def test_99_login_rate_limit(self):
         for _ in range(5):
-            status, _ = self.login("nope")
+            status, _, _ = self.login("nope")
             self.assertEqual(status, 401)
-        status, _ = self.login()  # even correct credentials are blocked now
+        status, _, _ = self.login()  # even correct credentials are blocked now
         self.assertEqual(status, 429)
 
 

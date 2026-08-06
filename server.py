@@ -22,8 +22,21 @@ TRUST_PROXY = bool(os.getenv("PROBE_TRUST_PROXY"))
 HISTORY_LIMIT = 120
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
+MAX_NODES = int(os.getenv("PROBE_MAX_NODES", "200"))
+MAX_BODY = 64 * 1024  # 64KB 请求体上限，防未认证端点内存/线程 DoS
 STATIC_FILES = {"index.html", "app.js", "style.css"}
 HOST_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?")
+# 仅接受 host:port（域名/IPv4），端口 1-65535。该值会原样嵌入 agent 脚本的
+# shell 调用点（单引号包裹），格式校验是防止命令注入的关键防线（agent.sh 侧另有防御）。
+PING_TARGET_RE = re.compile(r"^[A-Za-z0-9.-]+:\d{1,5}$")
+
+def valid_ping_target(value):
+    if not value:
+        return True  # 空值 = 清空该运营商目标
+    if not PING_TARGET_RE.fullmatch(value):
+        return False
+    port = int(value.rsplit(":", 1)[1])
+    return 1 <= port <= 65535
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("pulse-probe")
@@ -132,8 +145,16 @@ class App(SimpleHTTPRequestHandler):
         self.send_response(status); self.end_headers()
 
     def read_json(self):
-        try: return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-        except (ValueError, json.JSONDecodeError): return None
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            length = 0
+        if length > MAX_BODY:
+            return False  # sentinel: body too large (caller replies 413)
+        try:
+            return json.loads(self.rfile.read(length))
+        except (ValueError, json.JSONDecodeError):
+            return None
 
     def session_token(self):
         c = SimpleCookie(self.headers.get("Cookie"))
@@ -238,6 +259,8 @@ class App(SimpleHTTPRequestHandler):
             self.end_headers()
             return self.wfile.write(b'{"ok":true}')
         body = self.read_json()
+        if body is False:
+            return self.send_json({"error": "request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
         if body is None: return self.send_json({"error": "invalid request"}, 400)
         if path == "/api/login":
             ip = self.client_ip()
@@ -273,6 +296,7 @@ class App(SimpleHTTPRequestHandler):
                 valid = any(k["key"] == key for k in DATA["keys"])
             if not valid: return self.send_json({"error": "invalid key"}, 401)
             hostname = str(body.get("hostname", "unknown"))[:100]
+            body["name"] = str(body.get("name", ""))[:60]
             node_id = hashlib.sha256((key + hostname).encode()).hexdigest()[:16]
             if node_id in blocked_ids():
                 log.info("report dropped: blocked node %s (%s) from %s", node_id, hostname, self.client_ip())
@@ -282,6 +306,11 @@ class App(SimpleHTTPRequestHandler):
             ip = self.client_ip()
             with LOCK:
                 old = DATA["nodes"].get(node_id, {})
+                if not old and len(DATA["nodes"]) >= MAX_NODES:
+                    # 持钥者可伪造任意 hostname 刷节点，必须设上限防止内存/数据文件膨胀
+                    log.warning("node limit reached (%d); dropping new node %s from %s",
+                                MAX_NODES, hostname, ip)
+                    return self.send_json({"error": "node limit reached"}, 429)
                 now = time.time()
                 sample = {"time": now, "rx": body.get("network_rx", 0), "tx": body.get("network_tx", 0),
                           "cpu": body.get("cpu", 0), "memory": body.get("memory", 0), "disk": body.get("disk", 0)}
@@ -334,13 +363,19 @@ class App(SimpleHTTPRequestHandler):
             log.info("node %s unblocked", node_id)
             return self.send_json({"ok": True})
         if path == "/api/admin/settings":
-            name = str(body.get("admin_user", "")).strip()
-            if name and not (1 <= len(name) <= 60):
-                return self.send_json({"error": "username must be 1-60 chars"}, 400)
+            if "admin_user" in body:
+                name = str(body.get("admin_user", "")).strip()
+                # 显式传空/超长用户名必须拒绝；不传该字段则视为部分更新（如只改 Ping 目标）
+                if not (1 <= len(name) <= 60):
+                    return self.send_json({"error": "username must be 1-60 chars"}, 400)
+            for k in ("ping_ct", "ping_cu", "ping_cm"):
+                if k in body and not valid_ping_target(str(body.get(k, "")).strip()):
+                    return self.send_json(
+                        {"error": f"{k} must be host:port (e.g. 1.1.1.1:80) or empty"}, 400)
             with LOCK:
-                if name: DATA["settings"]["admin_user"] = name
+                if "admin_user" in body: DATA["settings"]["admin_user"] = name
                 for k in ("ping_ct", "ping_cu", "ping_cm"):
-                    if k in body: DATA["settings"][k] = str(body.get(k, ""))[:120]
+                    if k in body: DATA["settings"][k] = str(body.get(k, "")).strip()[:120]
                 save_data(force=True)
             log.info("admin settings updated")
             return self.send_json({"ok": True, "admin_user": admin_user(),

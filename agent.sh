@@ -57,11 +57,33 @@ fi
 cpu_cores=$(nproc 2>/dev/null || grep -c processor /proc/cpuinfo 2>/dev/null || echo 0)
 mem_total=$(awk '/MemTotal/ {print $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
 disk_total=$(df -P / | awk 'NR==2 {print $2*1024}' 2>/dev/null || echo 0)
-# TCP pings
-do_ping() { local h=${1%%:*} p=${1##*:}; test -n "$h" && test -n "$p" || { echo 0; return; }; local s=$(date +%s%N); timeout 3 bash -c "exec 3<>/dev/tcp/\$1/\$2 2>/dev/null; exec 3>&-" _ "$h" "$p" 2>/dev/null && echo $(( ($(date +%s%N) - s) / 1000000 )) || echo -1; }
-tcp_ping_ct=$(do_ping "__PING_CT__")
-tcp_ping_cu=$(do_ping "__PING_CU__")
-tcp_ping_cm=$(do_ping "__PING_CM__")
+# TCP pings: 目标仅接受 host:port（字母/数字/点/冒号/连字符）。
+# 双重防线：即使服务端下发的目标被篡改，这里也会拒绝执行任何其它字符。
+do_ping() {
+  local t="${1:-}" h p s t1
+  case "$t" in
+    ''|*[!A-Za-z0-9.:-]*|*::*) echo 0; return ;;
+    *:*) ;;
+    *) echo 0; return ;;
+  esac
+  h=${t%%:*}; p=${t##*:}
+  case "$p" in ''|*[!0-9]*) echo 0; return ;; esac
+  test "$p" -ge 1 && test "$p" -le 65535 || { echo 0; return; }
+  # busybox 等非 GNU date 不支持 %N 时退化为秒级精度
+  s=$(date +%s%N 2>/dev/null || true); case "$s" in *%N*) s=$(date +%s)000000000 ;; esac
+  # 单引号 + 位置参数：h/p 经白名单校验后才展开，杜绝命令注入
+  if timeout 3 bash -c 'exec 3<>/dev/tcp/"$1"/"$2" 2>/dev/null; exec 3>&-' _ "$h" "$p" 2>/dev/null; then
+    t1=$(date +%s%N 2>/dev/null || true); case "$t1" in *%N*) t1=$(date +%s)000000000 ;; esac
+    echo $(( (t1 - s) / 1000000 ))
+  else
+    echo -1
+  fi
+}
+# 调用点必须用单引号包裹：单引号内 `"`/`$(...)` 均为字面，即使服务端下发的
+# 目标被篡改（含引号闭合式注入），载荷也会整体成为 do_ping 的参数并被白名单拒绝。
+tcp_ping_ct=$(do_ping '__PING_CT__')
+tcp_ping_cu=$(do_ping '__PING_CU__')
+tcp_ping_cm=$(do_ping '__PING_CM__')
 printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s,"net_total_rx":%s,"net_total_tx":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm" "$total_rx" "$total_tx"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload

@@ -341,8 +341,10 @@ function renderKeys(keys) {
     const del = document.createElement('button');
     del.textContent = '删除';
     del.onclick = async () => {
-      await fetch('/api/admin/keys/' + x.id, { method: 'DELETE' });
-      loadAdmin();
+      try {
+        await api('/api/admin/keys/' + x.id, { method: 'DELETE' });
+        loadAdmin();
+      } catch (e) { alert(e.message); }
     };
     actions.append(use, del);
     row.append(info, actions);
