@@ -31,20 +31,27 @@ PROBE_ADMIN_PASSWORD='strong-password' PROBE_DATA_KEY='another-random-key' pytho
 
 ## Docker deployment
 
-See [DEPLOY.md](DEPLOY.md) for complete deployment and maintenance guide.
-
-### Minimal
+Pre-built images are published to [GHCR](https://github.com/chinachat/Pulse-Linux-Probe/pkgs/container/pulse-linux-probe) for **amd64 / arm64 / armv7** — no local build needed. Pull and run:
 
 ```bash
-git clone https://github.com/chinachat/Pulse-Linux-Probe.git
-cd Pulse-Linux-Probe
+curl -O https://raw.githubusercontent.com/chinachat/Pulse-Linux-Probe/main/docker-compose.yml
 echo 'PROBE_ADMIN_PASSWORD=your-strong-password' > .env
 echo 'PROBE_DATA_KEY=your-random-data-key' >> .env
 echo 'PROBE_PUBLIC_URL=https://probe.yourdomain.com' >> .env  # optional
-docker compose up -d --build
+docker compose up -d
+```
+
+Or run directly without compose:
+
+```bash
+docker run -d --name pulse-probe --restart unless-stopped \
+  -p 8080:8080 --env-file .env -v probe-data:/data \
+  ghcr.io/chinachat/pulse-linux-probe:latest
 ```
 
 Persistence: `probe-data` volume (mounted at `/data` in the container).
+
+> Development builds: use `build: .` instead of `image:` in `docker-compose.yml`.
 
 ### Reverse proxy (nginx)
 

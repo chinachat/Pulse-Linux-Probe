@@ -1,6 +1,8 @@
 services:
   pulse-probe:
-    build: .
+    # 直接拉取 GHCR 预构建镜像（amd64/arm64/armv7 多架构）
+    # 如需本地构建：注释掉 image，改用 build: .
+    image: ghcr.io/chinachat/pulse-linux-probe:latest
     ports:
       - "8080:8080"
     environment:

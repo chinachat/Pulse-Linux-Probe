@@ -27,20 +27,27 @@ PROBE_ADMIN_PASSWORD='强密码' PROBE_DATA_KEY='独立密钥' python3 server.py
 
 ## Docker 部署
 
-完整部署与维护文档见 [DEPLOY.md](DEPLOY.md)。
-
-### 最小步骤
+预构建镜像发布在 [GHCR](https://github.com/chinachat/Pulse-Linux-Probe/pkgs/container/pulse-linux-probe)，支持 **amd64 / arm64 / armv7** 多架构，无需本地构建，直接拉取：
 
 ```bash
-git clone https://github.com/chinachat/Pulse-Linux-Probe.git
-cd Pulse-Linux-Probe
+curl -O https://raw.githubusercontent.com/chinachat/Pulse-Linux-Probe/main/docker-compose.yml
 echo 'PROBE_ADMIN_PASSWORD=你的强密码' > .env
 echo 'PROBE_DATA_KEY=你的独立密钥' >> .env
-echo 'PROBE_PUBLIC_URL=https://probe.你的域名.com' >> .env
-docker compose up -d --build
+echo 'PROBE_PUBLIC_URL=https://probe.你的域名.com' >> .env  # 可选
+docker compose up -d
+```
+
+不用 compose 也可以直接运行：
+
+```bash
+docker run -d --name pulse-probe --restart unless-stopped \
+  -p 8080:8080 --env-file .env -v probe-data:/data \
+  ghcr.io/chinachat/pulse-linux-probe:latest
 ```
 
 数据持久化：`probe-data` 卷（容器内 `/data`）。
+
+> 本地构建（开发）：把 `docker-compose.yml` 里的 `image:` 改为 `build: .`。
 
 ### 反向代理 (nginx)
 

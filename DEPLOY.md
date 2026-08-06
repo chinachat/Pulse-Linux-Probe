@@ -10,11 +10,12 @@
 
 ## 一、首次部署
 
-### 1. 克隆项目
+> 预构建镜像发布在 GHCR（`ghcr.io/chinachat/pulse-linux-probe:latest`），支持 amd64 / arm64 / armv7 多架构，无需本地构建。
+
+### 1. 获取编排文件（无需克隆仓库）
 
 ```bash
-git clone https://github.com/chinachat/Pulse-Linux-Probe.git
-cd Pulse-Linux-Probe
+curl -O https://raw.githubusercontent.com/chinachat/Pulse-Linux-Probe/main/docker-compose.yml
 ```
 
 ### 2. 创建环境文件
@@ -63,7 +64,7 @@ echo 'PROBE_TRUST_PROXY=true' >> .env
 ### 4. 启动服务
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
 
 ### 5. 验证
@@ -104,10 +105,9 @@ curl http://localhost:8080/api/health
 ### 更新升级
 
 ```bash
-cd Pulse-Linux-Probe
-git pull
-docker compose down
-docker compose up -d --build
+# 拉取最新镜像并重启（无需克隆/构建）
+docker compose pull
+docker compose up -d
 ```
 
 ### 查看日志
@@ -194,4 +194,4 @@ PROBE_ADMIN_PASSWORD='password' PROBE_DATA_KEY='key' ./install-server.sh
 | 节点 IP 显示 172.x | 配置反向代理 + `PROBE_TRUST_PROXY=true` |
 | Ping 不显示 | 客户端需重新生成安装命令（嵌入 Ping 目标），后台配置后重新安装 |
 | 后台 403 错误 | 重新登录获取新 CSRF token |
-| 容器权限错误 | `docker compose down -v && docker compose up -d --build` 重建卷 |
+| 容器权限错误 | `docker compose down -v && docker compose pull && docker compose up -d` 重建卷 |
