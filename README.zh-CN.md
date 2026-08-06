@@ -72,6 +72,7 @@ server {
 | `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装脚本的外部访问地址 |
 | `PROBE_SESSION_TTL` | `43200`（12h） | 管理员会话有效期（秒） |
 | `PROBE_OFFLINE_SECONDS` | `90` | 超时未上报则显示离线 |
+| `PROBE_MAX_NODES` | `200` | 节点数上限（防止持钥者刷 hostname 耗尽存储） |
 | `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For 获取真实 IP |
 
 ## 客户端说明
@@ -123,8 +124,11 @@ server {
 - Docker 容器以非 root `pulse` 用户运行，根文件系统只读
 - Session Cookie：`HttpOnly`、`SameSite=Strict`、HTTPS 下 `Secure`
 - 登录限流：每 IP 5 次失败 / 5 分钟
+- Ping 目标仅接受 `host:port` 格式，嵌入客户端脚本前强制校验（阻断命令注入）
+- 节点数与请求体大小上限（`PROBE_MAX_NODES`、64KB），防资源耗尽
 - Content-Security-Policy、X-Frame-Options、HSTS（HTTPS）、静态文件白名单
 - 常量时间密码比较（`hmac.compare_digest`）
+- 默认不信任 `X-Forwarded-For`（`PROBE_TRUST_PROXY` 关闭时不可伪造 IP）
 
 ## 开发
 

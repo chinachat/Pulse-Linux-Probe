@@ -76,6 +76,7 @@ Set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com`
 | `PROBE_PUBLIC_URL` | from request | Public base URL for generated install scripts |
 | `PROBE_SESSION_TTL` | `43200` (12h) | Admin session lifetime in seconds |
 | `PROBE_OFFLINE_SECONDS` | `90` | Node shown offline after this many seconds without report |
+| `PROBE_MAX_NODES` | `200` | Max node count; protects storage from hostname-flooding |
 | `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for real client IPs |
 
 ## Client agent
@@ -127,6 +128,8 @@ Country lookup caches result for 24 hours. OS info cached permanently.
 - Docker container runs as non-root `pulse` user with `read_only` rootfs
 - Session cookies: `HttpOnly`, `SameSite=Strict`, `Secure` (when HTTPS)
 - Login rate-limited: 5 failures / 5 minutes per IP
+- Ping targets validated as `host:port` before being embedded in the agent script (blocks shell injection)
+- Node count and request body size capped (`PROBE_MAX_NODES`, 64 KB) to prevent resource exhaustion
 - Content-Security-Policy, X-Frame-Options, HSTS (on HTTPS), static file whitelist
 - Constant-time password comparison (`hmac.compare_digest`)
 - `X-Forwarded-For` spoofing blocked by default (`PROBE_TRUST_PROXY`)
