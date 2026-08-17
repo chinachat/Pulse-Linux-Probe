@@ -480,6 +480,29 @@ input:focus {
 .edit-node:last-child { border-bottom: none; }
 .edit-node input { flex: 1; min-width: 120px; }
 .edit-node button { flex-shrink: 0; }
+
+/* 节点信息管理：网格布局（一行多个卡片） */
+#admin-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+#admin-nodes .edit-node {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--card-2), var(--card));
+  box-shadow: var(--shadow);
+  transition: border-color var(--speed);
+}
+#admin-nodes .edit-node:hover { border-color: color-mix(in srgb, var(--accent, #10b981) 45%, var(--line)); }
+#admin-nodes .edit-node input { width: 100%; }
+.node-edit-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.node-edit-head b { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-edit-meta { display: flex; align-items: center; gap: 8px; font: 10px var(--font-mono); color: var(--muted); }
+.node-edit-meta i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent, #10b981); display: inline-block; flex-shrink: 0; }
+.node-edit-meta i.off { background: #64748b; }
+.node-edit-actions { display: flex; gap: 8px; }
+.node-edit-actions button { flex: 1; }
 .blocked-info { flex: 1; font: 13px var(--font-sans); }
 
 /* 提示与代码块 */

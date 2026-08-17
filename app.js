@@ -465,15 +465,38 @@ function renderAdminNodes(nodes) {
     n.append(p);
     return;
   }
+  const now = Date.now() / 1000;
   nodes.forEach(x => {
-    const row = document.createElement('div');
-    row.className = 'edit-node';
+    // 每节点一张编辑卡片（网格布局，一行多个）
+    const card = document.createElement('div');
+    card.className = 'edit-node';
+    // 头部：hostname + 在线状态
+    const head = document.createElement('div');
+    head.className = 'node-edit-head';
+    const title = document.createElement('b');
+    title.textContent = x.hostname || x.id || '未命名节点';
+    const online = (x.updated || 0) > 0 && now - x.updated < 90;
+    const meta = document.createElement('span');
+    meta.className = 'node-edit-meta';
+    const dot = document.createElement('i');
+    dot.className = online ? '' : 'off';
+    const metaText = document.createElement('span');
+    metaText.textContent = online ? '在线' : '离线';
+    meta.append(dot, metaText);
+    head.append(title, meta);
+    // 输入区
     const name = document.createElement('input');
     name.value = x.name || '';
     name.placeholder = '节点名称';
+    name.title = '节点名称';
     const country = document.createElement('input');
     country.value = x.country || '';
     country.placeholder = '国家代码';
+    country.title = '国家代码（两位，如 CN）';
+    country.maxLength = 2;
+    // 操作按钮
+    const actions = document.createElement('div');
+    actions.className = 'node-edit-actions';
     const save = document.createElement('button');
     save.textContent = '保存';
     save.onclick = async () => {
@@ -489,8 +512,13 @@ function renderAdminNodes(nodes) {
         refresh(); loadAdmin();
       }
     };
-    row.append(name, country, save, del);
-    n.append(row);
+    actions.append(save, del);
+    // 底部：最后上报时间
+    const foot = document.createElement('div');
+    foot.className = 'node-edit-meta';
+    foot.textContent = '最后上报: ' + (x.updated ? new Date(x.updated * 1000).toLocaleString('zh-CN', { hour12: false }) : '—');
+    card.append(head, name, country, actions, foot);
+    n.append(card);
   });
 }
 function renderBlocked(blocked) {
@@ -566,11 +594,17 @@ $('#copy-install').onclick = async () => {
 /* ---------- 刷新与轮询 ---------- */
 refresh();
 setInterval(refresh, 5000);
-// 管理后台打开期间每 10 秒自动刷新；正在编辑（光标停在输入框）时跳过
-setInterval(() => {
+// 管理后台打开期间每 10 秒自动刷新。
+// 编辑保护：焦点停留在管理区内的输入框/按钮等可交互元素时跳过刷新，
+// 避免实时刷新重绘 DOM 打断正在编辑的内容或操作。
+function adminEditing() {
   const a = document.activeElement;
-  const editing = a && a.tagName === 'INPUT' && $('#manage').contains(a);
-  if (!$('#admin-panel').hidden && !$('#manage').hidden && !editing) loadAdmin().catch(() => {});
+  if (!a || !$('#manage') || !$('#manage').contains(a)) return false;
+  const t = a.tagName;
+  return t === 'INPUT' || t === 'TEXTAREA' || t === 'BUTTON' || t === 'SELECT' || a.isContentEditable === true;
+}
+setInterval(() => {
+  if (!$('#admin-panel').hidden && !$('#manage').hidden && !adminEditing()) loadAdmin().catch(() => {});
 }, 10000);
 
 /* ---------- 分组侧边导航 ---------- */
