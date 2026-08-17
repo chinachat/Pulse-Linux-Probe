@@ -220,7 +220,8 @@ rm -f /usr/local/bin/linux-probe-payload /var/lib/linux-probe-network
 | `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装命令使用的外部地址 |
 | `PROBE_SESSION_TTL` | `43200`（12h） | 后台会话有效期（秒） |
 | `PROBE_OFFLINE_SECONDS` | `90` | 超过该秒数未上报判定离线 |
-| `PROBE_REQUIRE_SET_PASSWORD` | 未设置 | 设任意值后，默认密码下拒绝启动（fail-closed） |
+| `PROBE_MAX_NODES` | `200` | 节点数上限（防止持钥者刷 hostname 耗尽存储） |
+| `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For / X-Real-IP 获取真实 IP（仅在有可信反代时开启） |
 
 ## 8. 老版本升级迁移指南
 
@@ -306,7 +307,7 @@ curl -fsS http://127.0.0.1:8080/api/health
 - [ ] `PROBE_DATA_KEY` 独立设置，并安全存档（丢失=数据不可解密）
 - [ ] 公网访问走 HTTPS 反代，且已设置 `PROBE_PUBLIC_URL`
 - [ ] 8080 端口未直接暴露公网（仅反代可达）
-- [ ] 已设置 `PROBE_REQUIRE_SET_PASSWORD=1`（可选，更保险）
+- [ ] `PROBE_TRUST_PROXY=true` 仅在可信反代环境下开启
 - [ ] `data.enc` 所在目录权限合理（非 root 不可读）
 - [ ] 定期备份 `data.enc`
 - [ ] 验证静态白名单：`curl http://IP:8080/server.py` 应返回 404

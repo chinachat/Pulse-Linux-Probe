@@ -9,16 +9,17 @@ real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 
 ## Features
 
+- **Modern dashboard UI** — dark theme by default with a light-mode toggle (choice remembered in `localStorage`), responsive card grid, glassmorphism sticky header
 - **Resource monitoring** — CPU / memory / disk horizontal bar charts with percentage + total capacity
 - **Hardware specs** — CPU cores, total memory, total disk capacity, cumulative traffic per node
-- **Network metrics** — real-time throughput (Mbps) + total upload/download (MB/GB/TB)
-- **TCP ping** — CT (电信) / CU (联通) / CM (移动) latency badges with color coding (green ≤100ms / yellow ≤300ms / red >300ms)
-- **Ping history chart** — SVG-based line chart with 60-sample history and Y-axis labels
-- **Group display** — nodes auto-grouped by country, collapse/expand with localStorage persistence
-- **Floating nav panel** — group + node anchors, scroll-spy highlighting, mobile toggle, back-to-top
+- **Network metrics** — real-time throughput (Mbps) + total upload/download (MB/GB/TB), plus a live canvas rate chart on every node card
+- **TCP ping** — CT (电信) / CU (联通) / CM (移动) latency badges with color coding (green ≤100ms / yellow ≤300ms / red >300ms) and packet-loss rate
+- **Ping history chart** — SVG area-gradient chart; server keeps **120 samples (~2 h)**, dashboard shows the latest 60 (~1 h)
+- **OS detection** — distro icon tinted with the same color as the label via CSS mask + `currentColor` (crisp in both themes)
+- **Floating nav panel** — node anchors with scroll-spy highlighting, mobile slide-out, back-to-top
 - **Encrypted data file** — SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
-- **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login
-- **Admin console** — API key management (editable labels), node rename/country override, admin username change, one-line client installer with copy button, three-carrier ping target configuration
+- **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login, ping-target injection guard, node & body size caps
+- **Admin console** — API key management (editable labels), node editing in a card grid with live online status, auto-refresh that never interrupts editing, admin username change, one-line client installer with copy button, three-carrier ping target configuration
 
 ## Quick start (development)
 
@@ -92,19 +93,22 @@ Reports every minute via cron:
 
 - CPU (1-second delta sampling), memory usage + total, root disk usage + total
 - Network rx/tx throughput (bytes/sec, loopback excluded) + cumulative totals
-- Uptime, OS name + version (SVG icon), country code (cached 24h), CPU cores
+- Uptime, OS name + version (distro icon), country code (cached 24h), CPU cores
 - TCP ping to three configurable targets (CT/CU/CM)
 
 Country lookup caches result for 24 hours. OS info cached permanently.
+Ping latency history is kept for **120 samples (~2 hours)** server-side (`HISTORY_LIMIT`); the dashboard chart shows the latest 60 samples (~1 hour).
 
 ## Admin console
 
 1. **API Keys** — create, edit labels, revoke, generate client installer
 2. **Client Install** — one-liner copyable command, auto-embeds ping targets
-3. **Nodes** — rename, set country, delete (auto-blocks)
+3. **Nodes** — card-grid layout; rename, set country, live online status + last-report time, delete (auto-blocks)
 4. **Blocked Nodes** — view and unblock
 5. **Account** — change admin username
 6. **Ping Targets** — configure three-carrier TCP ping endpoints (host:port)
+
+> The admin panel auto-refreshes every 10 s, but **never re-renders while focus is on an input or button** — your in-progress edits are never wiped by a refresh.
 
 ## API
 
