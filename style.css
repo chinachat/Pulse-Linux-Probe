@@ -143,41 +143,12 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .stat-card b { display: block; font: 700 26px var(--font-mono); color: var(--accent, #10b981); line-height: 1.1; }
 .stat-card span { font-size: 11px; color: var(--muted); }
 
-/* ---------- 分组 ---------- */
-.group { margin-bottom: 18px; }
-.group-header {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border-radius: var(--radius);
-  background: linear-gradient(135deg, var(--soft), transparent 70%);
-  border: 1px solid var(--line);
-  user-select: none;
-  transition: border-color var(--speed);
-}
-.group-header:hover { border-color: var(--accent, #10b981); }
-.group-header b { font-size: 14px; flex: 1; display: flex; align-items: center; gap: 8px; }
-.group-header b img { width: 18px; height: 13px; border-radius: 2px; }
-.group-header span { color: var(--accent, #10b981); font: 600 12px var(--font-mono); }
-.group-header::before {
-  content: '▾';
-  font-size: 11px;
-  color: var(--muted);
-  transition: transform .2s;
-}
-.group-header.collapsed::before { transform: rotate(-90deg); }
-.group-content {
+/* ---------- 节点平铺网格（无分组，卡片直接铺开） ---------- */
+#nodes {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: 14px;
-  padding-top: 14px;
 }
-.group-content.collapsed { display: none; }
-
-/* 全部展开 / 收起 */
-.group-controls { display: flex; gap: 8px; margin-bottom: 4px; }
 
 /* ---------- 节点卡片 ---------- */
 .card {
@@ -236,15 +207,29 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .status.on { color: var(--accent, #10b981); background: var(--soft); }
 .status.off { color: var(--muted); background: var(--bar-bg); }
 
-/* OS 标签 */
+/* OS 标签：图标用 mask + currentColor，颜色与文字完全同步（含主题切换） */
 .os-tag { display: inline-flex; align-items: center; gap: 4px; font: 500 11px var(--font-sans); color: var(--muted); }
 .os-tag b { font-weight: 600; }
-.os-svg { width: 14px; height: 14px; flex-shrink: 0; }
-.os-tag.debian { color: #A81D33; } .os-tag.ubuntu { color: #E95420; }
-.os-tag.centos { color: #932279; } .os-tag.rocky { color: #10B981; }
-.os-tag.alma { color: #0EA5E9; } .os-tag.redhat { color: #EE0000; }
-.os-tag.fedora { color: #3C6EB4; } .os-tag.arch { color: #1793D1; }
-.os-tag.alpine { color: #0D597F; } .os-tag.suse { color: #73BA25; }
+.os-svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: inline-block;
+  background-color: currentColor;
+  -webkit-mask: var(--os-url, none) center / contain no-repeat;
+  mask: var(--os-url, none) center / contain no-repeat;
+}
+.os-tag.debian { color: #A81D33; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/debian.svg'); }
+.os-tag.ubuntu { color: #E95420; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/ubuntu.svg'); }
+.os-tag.centos { color: #932279; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/centos.svg'); }
+.os-tag.rocky { color: #10B981; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/rockylinux.svg'); }
+.os-tag.alma { color: #0EA5E9; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/almalinux.svg'); }
+.os-tag.redhat { color: #EE0000; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/redhat.svg'); }
+.os-tag.fedora { color: #3C6EB4; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/fedora.svg'); }
+.os-tag.arch { color: #1793D1; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/archlinux.svg'); }
+.os-tag.alpine { color: #0D597F; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/alpinelinux.svg'); }
+.os-tag.suse { color: #73BA25; --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/opensuse.svg'); }
+.os-tag.other { --os-url: url('https://cdn.jsdelivr.net/npm/simple-icons@14/icons/linux.svg'); }
 
 /* ---------- 资源进度条 ---------- */
 .metric-row { display: flex; flex-direction: column; gap: 8px; }
@@ -537,7 +522,7 @@ footer svg { flex-shrink: 0; }
   .hero { align-items: flex-start; }
   .hero-stats { width: 100%; }
   .stat-card { flex: 1; text-align: center; }
-  .group-content { grid-template-columns: 1fr; }
+  #nodes { grid-template-columns: 1fr; }
   .card-head { flex-direction: column; align-items: flex-start; }
   .node-badges { width: 100%; }
   .topbar { height: 58px; }

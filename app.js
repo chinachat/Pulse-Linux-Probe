@@ -67,7 +67,7 @@ function hexA(hex, a) {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-/* ---------- OS 图标（CSP 兼容：不在 HTML 中内联 onerror，由 JS 绑定） ---------- */
+/* ---------- OS 图标（span + CSS mask，颜色随 currentColor 与文字同步） ---------- */
 function osIcon(os) {
   const s = (os || '').toLowerCase();
   let cls = 'other', label = 'Linux';
@@ -83,11 +83,7 @@ function osIcon(os) {
   else if (s.includes('opensuse') || s.includes('suse')) { cls = 'suse'; label = 'openSUSE'; }
   const m = os.match(/\d+/);
   const ver = m ? ' ' + m[0] : '';
-  const src = 'https://cdn.jsdelivr.net/npm/simple-icons@14/icons/'
-    + cls.replace('rocky', 'rockylinux').replace('alma', 'almalinux')
-        .replace('arch', 'archlinux').replace('alpine', 'alpinelinux')
-        .replace('suse', 'opensuse') + '.svg';
-  return `<span class="os-tag ${cls}"><img src="${src}" class="os-svg" alt="" loading="lazy"><b>${label}</b>${ver}</span>`;
+  return `<span class="os-tag ${cls}"><span class="os-svg" aria-hidden="true"></span><b>${label}</b>${ver}</span>`;
 }
 
 /* ---------- Ping 历史图（SVG 折线 + 面积渐变 + 端点） ---------- */
@@ -224,9 +220,8 @@ function createCard(n, container) {
   e.querySelector('.ip').textContent = n.ip;
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.status').className = 'status ' + (n.online ? 'on' : 'off');
-  // OS 标签（error 事件用 JS 绑定，规避 CSP 对内联 onerror 的限制）
+  // OS 标签（图标为 span，颜色由 CSS mask + currentColor 控制，与文字同步）
   e.querySelector('.os').innerHTML = osIcon(n.os);
-  e.querySelectorAll('.os-svg').forEach(img => img.addEventListener('error', () => img.remove()));
   // 资源进度条（先归零再动画到目标值）
   e.querySelectorAll('.bar').forEach((x, i) => {
     const v = ms[i] || 0;
@@ -284,12 +279,6 @@ function render(nodes) {
   animateNumber($('#total'), nodes.length);
   const box = $('#nodes');
   box.innerHTML = '';
-  // 按国家分组
-  const groups = {}; const offline = [];
-  nodes.forEach(n => {
-    if (n.online) { const cc = n.country || '??'; (groups[cc] = groups[cc] || []).push(n); }
-    else { offline.push(n); }
-  });
   // 空状态
   if (!nodes.length) {
     const d = document.createElement('div');
@@ -299,39 +288,9 @@ function render(nodes) {
     updateGroupNav();
     return;
   }
-  let saved = {};
-  try { saved = JSON.parse(localStorage.getItem('probe-groups') || '{}'); } catch (_) {}
-  function addGroup(label, groupNodes, alwaysOpen) {
-    const g = document.createElement('div'); g.className = 'group';
-    const h = document.createElement('div'); h.className = 'group-header';
-    h.innerHTML = '<b>' + label + '</b><span>' + groupNodes.length + '</span>';
-    const c = document.createElement('div'); c.className = 'group-content';
-    groupNodes.forEach(n => createCard(n, c));
-    const key = label.replace(/<[^>]+>/g, '').trim();
-    if (!alwaysOpen && saved[key]) { c.classList.add('collapsed'); h.classList.add('collapsed'); }
-    h.onclick = () => {
-      c.classList.toggle('collapsed'); h.classList.toggle('collapsed');
-      saved[key] = c.classList.contains('collapsed');
-      localStorage.setItem('probe-groups', JSON.stringify(saved));
-    };
-    g.append(h, c); box.appendChild(g);
-  }
-  Object.keys(groups).sort().forEach(cc => addGroup(countryFlag(cc), groups[cc]));
-  if (offline.length) addGroup('离线节点', offline, true);
-  // 分组控制
-  const ctrl = document.createElement('div'); ctrl.className = 'group-controls';
-  const expandBtn = document.createElement('button');
-  expandBtn.className = 'small'; expandBtn.textContent = '全部展开';
-  const collapseBtn = document.createElement('button');
-  collapseBtn.className = 'small'; collapseBtn.textContent = '全部收起';
-  ctrl.append(expandBtn, collapseBtn);
-  expandBtn.onclick = () => { box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.remove('collapsed')); localStorage.removeItem('probe-groups'); };
-  collapseBtn.onclick = () => {
-    box.querySelectorAll('.group-content,.group-header').forEach(el => el.classList.add('collapsed'));
-    const all = {}; box.querySelectorAll('.group-header b').forEach(b => { all[b.textContent] = true; });
-    localStorage.setItem('probe-groups', JSON.stringify(all));
-  };
-  box.insertBefore(ctrl, box.firstChild);
+  // 平铺网格：在线优先、离线置后（组内保持 API 的名称排序）
+  const sorted = [...nodes].sort((a, b) => a.online === b.online ? 0 : a.online ? -1 : 1);
+  sorted.forEach(n => createCard(n, box));
   updateGroupNav();
 }
 
@@ -607,57 +566,33 @@ setInterval(() => {
   if (!$('#admin-panel').hidden && !$('#manage').hidden && !adminEditing()) loadAdmin().catch(() => {});
 }, 10000);
 
-/* ---------- 分组侧边导航 ---------- */
+/* ---------- 右侧浮动导航（回到顶部 + 节点锚点） ---------- */
 function updateGroupNav() {
   const nav = $('#group-nav');
   if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }
   nav.style.display = '';
-  nav.querySelectorAll('.nav-group,.nav-node,.nav-ctrl').forEach(el => el.remove());
-  document.querySelectorAll('.group').forEach(g => {
-    const b = g.querySelector('.group-header b');
-    if (!b) return;
-    const a = document.createElement('a');
-    a.className = 'nav-group';
-    a.innerHTML = b.innerHTML;
-    a.onclick = () => g.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    nav.insertBefore(a, nav.querySelector('.nav-top'));
-    g.querySelectorAll('.node-row strong, .node-title strong').forEach(s => {
-      const na = document.createElement('a');
-      na.className = 'nav-node';
-      na.textContent = s.textContent;
-      na.onclick = (e) => {
-        e.stopPropagation();
-        const card = s.closest('.card');
-        const group = card.closest('.group');
-        if (group) {
-          const gc = group.querySelector('.group-content');
-          const gh = group.querySelector('.group-header');
-          if (gc.classList.contains('collapsed')) {
-            gc.classList.remove('collapsed'); gh.classList.remove('collapsed');
-            const key = (gh.querySelector('b') || {}).textContent || '';
-            const saved = JSON.parse(localStorage.getItem('probe-groups') || '{}');
-            delete saved[key.replace(/<[^>]+>/g, '').trim()];
-            localStorage.setItem('probe-groups', JSON.stringify(saved));
-          }
-        }
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      };
-      nav.insertBefore(na, nav.querySelector('.nav-top'));
-    });
+  nav.querySelectorAll('.nav-node').forEach(el => el.remove());
+  document.querySelectorAll('.card').forEach(card => {
+    const s = card.querySelector('.node-title strong');
+    if (!s) return;
+    const na = document.createElement('a');
+    na.className = 'nav-node';
+    na.textContent = s.textContent;
+    na.onclick = () => card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    nav.insertBefore(na, nav.querySelector('.nav-top'));
   });
-  document.querySelectorAll('.group').forEach(g => navObserver.observe(g));
+  document.querySelectorAll('.card').forEach(c => navObserver.observe(c));
 }
 $('#group-nav .nav-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 $('#nav-toggle').onclick = () => $('#group-nav').classList.toggle('visible');
 const navObserver = new IntersectionObserver((entries) => {
   entries.forEach(e => {
     if (!e.isIntersecting) return;
-    const b = e.target.querySelector('.group-header b');
-    if (!b) return;
-    const key = b.textContent;
-    document.querySelectorAll('#group-nav .nav-group').forEach(a => {
-      const ab = a.querySelector('b');
-      a.classList.toggle('active', ab && ab.textContent === key);
+    const s = e.target.querySelector('.node-title strong');
+    if (!s) return;
+    const key = s.textContent;
+    document.querySelectorAll('#group-nav .nav-node').forEach(a => {
+      a.classList.toggle('active', a.textContent === key);
     });
   });
 }, { rootMargin: '-20% 0px -60% 0px' });
