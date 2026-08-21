@@ -52,12 +52,14 @@ function bytesTotal(rx, tx) {
   const f = v => { v = Number(v) || 0; return v >= 1e12 ? (v / 1e12).toFixed(1) + 'TB' : v >= 1e9 ? (v / 1e9).toFixed(1) + 'GB' : (v / 1e6).toFixed(1) + 'MB'; };
   return f(rx) + ' ↓ / ' + f(tx) + ' ↑';
 }
+/* 容量按 1024 进制显示，与 free -h / df -h 一致（16 GiB 内存显示 16.0 GB，
+   而不是十进制的 17.2 GB）。流量累计走 decimal 的 bytesTotal()（网络惯例）。 */
 function bytes(v) {
   v = Number(v) || 0;
-  if (v >= 1e12) return (v / 1e12).toFixed(1) + ' TB';
-  if (v >= 1e9) return (v / 1e9).toFixed(1) + ' GB';
-  if (v >= 1e6) return (v / 1e6).toFixed(1) + ' MB';
-  return (v / 1e3).toFixed(0) + ' KB';
+  if (v >= 1024 ** 4) return (v / 1024 ** 4).toFixed(1) + ' TB';
+  if (v >= 1024 ** 3) return (v / 1024 ** 3).toFixed(1) + ' GB';
+  if (v >= 1024 ** 2) return (v / 1024 ** 2).toFixed(1) + ' MB';
+  return (v / 1024).toFixed(0) + ' KB';
 }
 /* hex 颜色转 rgba（用于 canvas 渐变） */
 function hexA(hex, a) {

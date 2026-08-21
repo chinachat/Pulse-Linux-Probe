@@ -8,10 +8,11 @@ cat > /usr/local/bin/linux-probe-payload <<'EOF'
 # CPU: sample /proc/stat twice (1s apart) and compute the delta, so the value
 # reflects current usage instead of the all-time average since boot.
 # awk 默认 OFMT=%.6g：tick 累计值 ≥1e6 时会输出科学计数法（如 2.2179e+09），
-# 直接进入 bash 算术会报 "invalid arithmetic operator"；必须强制整数格式输出。
-read -r total1 idle1 < <(awk '/^cpu / {printf "%d %d\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
+# 直接进入 bash 算术会报 "invalid arithmetic operator"；而 %d 在 32 位 awk
+# 上会把大数截断成错误值。%.0f 无整数强转、无科学计数法，2^53 内精确，全平台安全。
+read -r total1 idle1 < <(awk '/^cpu / {printf "%.0f %.0f\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
 sleep 1
-read -r total2 idle2 < <(awk '/^cpu / {printf "%d %d\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
+read -r total2 idle2 < <(awk '/^cpu / {printf "%.0f %.0f\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
 # 兜底：即使出现异常值，也保证 cpu 是数字，避免拼出非法 JSON
 cpu=$(( total2 > total1 ? ((total2-total1)-(idle2-idle1))*100/(total2-total1) : 0 )) 2>/dev/null || cpu=0
 mem=$(free | awk '/Mem:/ {print int($3*100/$2)}')
@@ -58,8 +59,8 @@ else
   echo "$os" > "$os_cache"
 fi
 cpu_cores=$(nproc 2>/dev/null || grep -c processor /proc/cpuinfo 2>/dev/null || echo 0)
-mem_total=$(awk '/MemTotal/ {printf "%d\n", $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
-disk_total=$(df -P / | awk 'NR==2 {printf "%d\n", $2*1024}' 2>/dev/null || echo 0)
+mem_total=$(awk '/MemTotal/ {printf "%.0f\n", $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
+disk_total=$(df -P / | awk 'NR==2 {printf "%.0f\n", $2*1024}' 2>/dev/null || echo 0)
 # TCP pings: 目标仅接受 host:port（字母/数字/点/冒号/连字符）。
 # 双重防线：即使服务端下发的目标被篡改，这里也会拒绝执行任何其它字符。
 do_ping() {
