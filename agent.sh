@@ -13,8 +13,12 @@ cat > /usr/local/bin/linux-probe-payload <<'EOF'
 read -r total1 idle1 < <(awk '/^cpu / {printf "%.0f %.0f\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
 sleep 1
 read -r total2 idle2 < <(awk '/^cpu / {printf "%.0f %.0f\n", $2+$3+$4+$5+$6+$7+$8, $5+$6}' /proc/stat)
-# 兜底：即使出现异常值，也保证 cpu 是数字，避免拼出非法 JSON
-cpu=$(( total2 > total1 ? ((total2-total1)-(idle2-idle1))*100/(total2-total1) : 0 )) 2>/dev/null || cpu=0
+# 兜底：先校验数值再计算，避免 awk 异常值触发 bash 算术错误(它在 set -e 下会
+# 直接终止脚本，`2>/dev/null || cpu=0` 抓不住解析期错误)。等距空值/非法值都归 0。
+case "$total1$idle1$total2$idle2" in
+  *[!0-9]*) cpu=0 ;;
+  *) cpu=$(( total2 > total1 ? ((total2-total1)-(idle2-idle1))*100/(total2-total1) : 0 )) ;;
+esac
 mem=$(free | awk '/Mem:/ {print int($3*100/$2)}')
 disk=$(df -P / | awk 'NR==2 {gsub("%","",$5);print $5}')
 now=$(date +%s)
