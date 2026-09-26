@@ -22,7 +22,7 @@ OFFLINE_SECONDS = int(os.getenv("PROBE_OFFLINE_SECONDS", "90"))
 # 会注入同名变量，`PROBE_TRUST_PROXY=false` 是非空字符串，bool() 得到 True，
 # 等于把"关闭"读成"开启"（后果见 README 的「反向代理」一节）。
 TRUST_PROXY = os.getenv("PROBE_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes", "on")
-RATE_HISTORY_LIMIT = 120          # 速率样本：约 2 小时（1 分钟粒度），图表只用最近 30 个
+LOAD_HISTORY_LIMIT = int(os.getenv("PROBE_LOAD_HISTORY", "1440"))  # 负载/网络样本：1 天（1 分钟粒度）
 PING_HISTORY_LIMIT = int(os.getenv("PROBE_PING_HISTORY", "1440"))  # 延迟样本：1 天（1 分钟粒度）
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
@@ -48,8 +48,29 @@ REPORT_FIELDS = {
     "network_rx": (0.0, 1e15), "network_tx": (0.0, 1e15),
     "net_total_rx": (0.0, 1e15), "net_total_tx": (0.0, 1e15),
     "tcp_ping_ct": (-1.0, 1e6), "tcp_ping_cu": (-1.0, 1e6), "tcp_ping_cm": (-1.0, 1e6),
+    # 规格/负载（新增；老客户端不上报时缺失，前端按"没有"处理）
+    "cpu_mhz": (0.0, 1e6), "iowait": (0.0, 100.0),
+    "mem_cached": (0.0, 1e15), "mem_buffers": (0.0, 1e15), "mem_available": (0.0, 1e15),
+    "swap_total": (0.0, 1e15), "swap_used": (0.0, 1e15),
+    "load1": (0.0, 1e6), "load5": (0.0, 1e6), "load15": (0.0, 1e6),
+    "procs": (0.0, 1e9), "threads": (0.0, 1e9), "running": (0.0, 1e9),
+    "tcp_conn": (0.0, 1e9), "net_err": (0.0, 1e15), "net_drop": (0.0, 1e15),
 }
-REPORT_STRINGS = (("hostname", 100, "unknown"), ("name", 60, ""), ("os", 120, ""))
+REPORT_STRINGS = (("hostname", 100, "unknown"), ("name", 60, ""), ("os", 120, ""),
+                  # 规格类字符串；取不到的留空，前端整行不显示
+                  ("os_version_id", 40, ""), ("os_codename", 40, ""), ("os_id", 40, ""),
+                  ("kernel", 120, ""), ("kernel_full", 160, ""), ("arch", 20, ""),
+                  ("cpu_model", 120, ""), ("cpu_cache", 40, ""), ("virt", 40, ""))
+# 单条负载样本包含哪些字段：(上报字段, 样本里的短键)。
+# 改这里就会同时影响存储、下发和曲线。
+HISTORY_SAMPLE_FIELDS = (("network_rx", "rx"), ("network_tx", "tx"), ("cpu", "cpu"),
+                         ("memory", "memory"), ("disk", "disk"), ("load1", "load1"),
+                         ("mem_cached", "mem_cached"), ("swap_used", "swap_used"))
+# 详情接口：一次最多下发多少个点、可查询的最大时间窗
+DETAIL_POINTS = 300
+DETAIL_KEEP_RECENT = 60
+DETAIL_MAX_RANGE = 86400
+NODE_ID_RE = re.compile(r"^[0-9a-f]{6,64}$")
 
 def valid_ping_target(value):
     if not value:
@@ -297,6 +318,27 @@ def compact_series(series, limit):
     """速率序列只需保留最近若干点（前端只画最近 30 个）。"""
     return series[-limit:] if limit > 0 else series
 
+def slim_rate(sample):
+    """列表页只画速率双曲线，别把 cpu/memory/disk/负载等字段一起下发。
+    既省流量，也让列表接口的体积不随采样字段增加而增长。"""
+    return {"time": sample.get("time", 0), "rx": sample.get("rx", 0),
+            "tx": sample.get("tx", 0)}
+
+def downsample_even(series, limit):
+    """等距抽样到 limit 个点（详情页的负载曲线用）。"""
+    n = len(series)
+    if limit <= 0 or n <= limit:
+        return series
+    return [series[int(i * n / limit)] for i in range(limit)]
+
+def trim_window(series, since):
+    """取时间窗内的样本；窗口内一个都没有时至少回退到最后一个点，
+    免得刚改区间就白屏。"""
+    if not series:
+        return []
+    win = [s for s in series if (s.get("time") or 0) >= since]
+    return win if win else series[-1:]
+
 class App(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         # 静态文件必须相对脚本目录解析：SimpleHTTPRequestHandler 默认用进程 CWD，
@@ -382,6 +424,38 @@ class App(SimpleHTTPRequestHandler):
                 self.send_json({"error": "csrf token required"}, 403); return False
         return True
 
+    def node_detail(self, node_id, query):
+        """单节点详情：按时间窗裁剪 + 降采样。
+
+        列表接口为了保持轻量只下发最近 60 个速率点 / 240 个延迟点；详情页要画
+        一整天的曲线，所以单独开一个按节点按需拉取的接口，而不是把列表撑大。
+        """
+        if not NODE_ID_RE.fullmatch(node_id or ""):
+            return self.send_json({"error": "not found"}, 404)
+        try:
+            window = int(query.get("range", ["3600"])[0])
+        except (TypeError, ValueError):
+            window = 3600
+        window = min(max(window, 300), DETAIL_MAX_RANGE)
+        with LOCK:
+            node = DATA["nodes"].get(node_id)
+            if node is None:
+                return self.send_json({"error": "node not found"}, 404)
+            node = dict(node)
+        now = time.time()
+        since = now - window
+        load_win = trim_window(node.get("history", []), since)
+        ping_win = trim_window(node.get("ping_history", []), since)
+        detail = {k: v for k, v in node.items() if k not in ("history", "ping_history")}
+        detail["ip"] = mask_ip(node.get("ip"))
+        detail["online"] = now - node.get("updated", 0) < OFFLINE_SECONDS
+        return self.send_json({
+            "node": detail,
+            "range": window,
+            "history": downsample_even(load_win, DETAIL_POINTS),
+            "ping_history": compact_ping_history(ping_win, DETAIL_POINTS, DETAIL_KEEP_RECENT),
+        })
+
     def do_GET(self):
         parsed, path = urlparse(self.path), urlparse(self.path).path
         if path == "/api/health":
@@ -398,11 +472,13 @@ class App(SimpleHTTPRequestHandler):
                 n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
                 # 只下发图表够用的点数：全量 1440 点 × 200 节点会把响应撑到十几 MB，
                 # 而图表宽度只有几百像素。
-                n["history"] = compact_series(n.get("history", []), API_RATE_POINTS)
+                n["history"] = [slim_rate(s) for s in compact_series(n.get("history", []), API_RATE_POINTS)]
                 n["ping_history"] = compact_ping_history(n.get("ping_history", []),
                                                          API_PING_POINTS, API_PING_KEEP_RECENT)
                 nodes.append(n)
             return self.send_json({"nodes": sorted(nodes, key=lambda n: n.get("name", ""))})
+        if path.startswith("/api/nodes/"):
+            return self.node_detail(path[len("/api/nodes/"):], parse_qs(parsed.query))
         if path == "/api/admin/nodes":
             if self.require_admin():
                 with LOCK:
@@ -515,9 +591,10 @@ class App(SimpleHTTPRequestHandler):
                                 MAX_NODES, hostname, ip)
                     return self.send_json({"error": "node limit reached"}, 429)
                 now = time.time()
-                sample = {"time": now, "rx": clean.get("network_rx", 0), "tx": clean.get("network_tx", 0),
-                          "cpu": clean.get("cpu", 0), "memory": clean.get("memory", 0), "disk": clean.get("disk", 0)}
-                history = (old.get("history", []) + [sample])[-RATE_HISTORY_LIMIT:]
+                sample = {"time": now}
+                for field, key in HISTORY_SAMPLE_FIELDS:
+                    sample[key] = clean.get(field, 0)
+                history = (old.get("history", []) + [sample])[-LOAD_HISTORY_LIMIT:]
                 ping_sample = {"time": now, "ct": clean.get("tcp_ping_ct", 0), "cu": clean.get("tcp_ping_cu", 0), "cm": clean.get("tcp_ping_cm", 0)}
                 ping_history = (old.get("ping_history", []) + [ping_sample])[-PING_HISTORY_LIMIT:]
                 # 管理员改过的名称/国家码优先于客户端上报

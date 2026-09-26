@@ -221,6 +221,7 @@ rm -f /usr/local/bin/linux-probe-payload /var/lib/linux-probe-network
 | `PROBE_SESSION_TTL` | `43200`（12h） | 后台会话有效期（秒） |
 | `PROBE_OFFLINE_SECONDS` | `90` | 超过该秒数未上报判定离线 |
 | `PROBE_MAX_NODES` | `200` | 节点数上限（防止持钥者刷 hostname 耗尽存储） |
+| `PROBE_LOAD_HISTORY` | `1440` | 每节点保留的负载/网络采样数（1 分钟一个，1440 = 24 小时） |
 | `PROBE_PING_HISTORY` | `1440` | 每节点保留的延迟采样数（1 分钟一个，1440 = 24 小时） |
 | `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For / X-Real-IP 获取真实 IP（仅在有可信反代时开启）。只有 `1`/`true`/`yes`/`on` 算开启，`false`/`0`/空值均为关闭 |
 

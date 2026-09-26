@@ -129,8 +129,8 @@ function lossStats(samples) {
   return { lost, total, pct: total ? lost / total * 100 : 0 };
 }
 
-function pingChart(svg, samples = []) {
-  const w = 600, h = 48, pad = 4;
+function pingChart(svg, samples = [], height = 48) {
+  const w = 600, h = height, pad = 4;
   if (!samples.length) { svg.innerHTML = ''; return; }
   const xs = xPositions(samples, w);
   const all = samples.flatMap(s => ['ct', 'cu', 'cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
@@ -182,8 +182,8 @@ function pingChart(svg, samples = []) {
 }
 
 /* ---------- 丢包图（与延迟图共用时间轴） ---------- */
-function lossChart(svg, samples = []) {
-  const w = 600, h = 18;
+function lossChart(svg, samples = [], height = 18) {
+  const w = 600, h = height;
   if (!samples.length) { svg.innerHTML = ''; return; }
   const xs = xPositions(samples, w);
   let bars = '';
@@ -201,9 +201,10 @@ function lossChart(svg, samples = []) {
 }
 
 /* ---------- 实时网络速率图（canvas 面积渐变 + 双曲线） ---------- */
-function networkChart(canvas, history = [], current = {}) {
+function networkChart(canvas, history = [], current = {}, opts = {}) {
+  const count = opts.count || 30;
   const parentW = canvas.parentElement.clientWidth;
-  const w = parentW || 270, h = 64, ml = 36, d = devicePixelRatio || 1, c = canvas.getContext('2d');
+  const w = parentW || 270, h = opts.height || 64, ml = 36, d = devicePixelRatio || 1, c = canvas.getContext('2d');
   canvas.width = w * d; canvas.height = h * d; c.scale(d, d);
   const cs = getComputedStyle(document.body);
   const muted = cs.getPropertyValue('--muted').trim() || '#64766e';
@@ -211,7 +212,7 @@ function networkChart(canvas, history = [], current = {}) {
   const rxColor = cs.getPropertyValue('--net-rx').trim() || '#38bdf8';
   const txColor = cs.getPropertyValue('--net-tx').trim() || '#10b981';
   const cardBg = cs.getPropertyValue('--card').trim() || '#121a17';
-  let samples = (history || []).slice(-30).map(x => ({ rx: Number(x.rx) || 0, tx: Number(x.tx) || 0 }));
+  let samples = (history || []).slice(-count).map(x => ({ rx: Number(x.rx) || 0, tx: Number(x.tx) || 0 }));
   if (!samples.length) samples = [{ rx: Number(current.network_rx) || 0, tx: Number(current.network_tx) || 0 }];
   const peak = Math.max(1, ...samples.flatMap(x => [x.rx, x.tx]));
   const pw = w - ml;
@@ -305,12 +306,14 @@ function renderRegionTabs(nodes) {
 }
 
 /* ---------- 延迟图表区间：按时间截取采样点 ---------- */
-function pingWindow(node) {
+// range 必须能显式传入：详情页有自己的区间选择器，用错全局的 _pingRange
+// 会让详情页的延迟/丢包图永远停在列表页那一档。
+function pingWindow(node, range = _pingRange) {
   const all = node.ping_history || [];
   if (!all.length) return all;
   // 以服务端时间戳为基准，避免浏览器时钟偏差把整段数据切掉
   const now = Number(node.updated) || Number(all[all.length - 1].time) || 0;
-  const win = all.filter(s => (Number(s.time) || 0) >= now - _pingRange);
+  const win = all.filter(s => (Number(s.time) || 0) >= now - range);
   // 刚上线 / 时钟异常时可能筛空，退回最后几个点，别让图凭空消失
   return win.length >= 2 ? win : all.slice(-Math.min(all.length, 30));
 }
@@ -325,6 +328,83 @@ document.querySelectorAll('#ping-range button').forEach(btn => {
     if (_lastNodes) render(_lastNodes);
   };
 });
+
+/* ---------- 负载曲线（CPU / 内存 / 磁盘，全部是 0-100 的百分比） ---------- */
+/* 注意：百分比里 0 是有效值（磁盘可能真的是 0%），不像延迟那样能把 0 当"没数据"过滤掉 */
+const LOAD_SERIES = [
+  { key: 'cpu', color: '#10b981' },
+  { key: 'memory', color: '#38bdf8' },
+  { key: 'disk', color: '#f59e0b' },
+];
+
+function pctLines(svg, samples, series, height = 96) {
+  const w = 600, h = height, pad = 4;
+  svg.innerHTML = '';
+  if (!samples.length) return;
+  const xs = xPositions(samples, w);
+  const py = v => h - pad - Math.min(Math.max(Number(v) || 0, 0), 100) / 100 * (h - pad * 2);
+  let html = '';
+  [100, 50].forEach(v => {
+    html += `<line x1="0" y1="${py(v).toFixed(1)}" x2="${w}" y2="${py(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3"/>`;
+  });
+  html += `<line x1="0" y1="${py(0).toFixed(1)}" x2="${w}" y2="${py(0).toFixed(1)}" stroke="var(--line)"/>`;
+  series.forEach(({ key, color }) => {
+    const pts = samples.map((s, i) => [xs[i], py(s[key])]);
+    if (!pts.length) return;
+    const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+    html += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+  });
+  svg.innerHTML = html;
+  const axis = svg.parentElement.querySelector('.y-axis');
+  if (axis) {
+    const sp = axis.querySelectorAll('span');
+    if (sp[0]) sp[0].textContent = '100%';
+    if (sp[1]) sp[1].textContent = '50%';
+    if (sp[2]) sp[2].textContent = '0';
+  }
+}
+
+/* ---------- 内存构成（已用 + buff/cache 堆叠，同样按总量的百分比画） ---------- */
+function memChart(svg, samples, total, height = 80) {
+  const w = 600, h = height, pad = 4;
+  svg.innerHTML = '';
+  if (!samples.length) return;
+  const xs = xPositions(samples, w);
+  const py = v => h - pad - Math.min(Math.max(v, 0), 100) / 100 * (h - pad * 2);
+  const cs = getComputedStyle(document.body);
+  const usedColor = (cs.getPropertyValue('--mem-used') || '#38bdf8').trim();
+  const cachedColor = (cs.getPropertyValue('--mem-cached') || '#a78bfa').trim();
+  const totalBytes = Number(total) || 0;
+  // 已用是服务端算好的百分比；缓存是字节数，要按总量换算
+  const usedPct = s => Math.min(Math.max(Number(s.memory) || 0, 0), 100);
+  const cachedPct = s => {
+    if (totalBytes <= 0) return 0;
+    const c = (Number(s.mem_cached) || 0) / totalBytes * 100;
+    return Math.min(Math.max(c, 0), 100 - usedPct(s));
+  };
+  const bot = samples.map((s, i) => [xs[i], py(usedPct(s))]);
+  const top = samples.map((s, i) => [xs[i], py(usedPct(s) + cachedPct(s))]);
+  const line = (pts, first) => pts.map((p, i) => (i || first ? 'L' : 'M') +
+    p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+  const baseY = py(0).toFixed(1);
+  const last = arr => arr[arr.length - 1];
+  // 缓存层：上边界正向 + 下边界反向闭合；已用层：下边界到 0 闭合
+  const cachedArea = line(top, 1) +
+    bot.slice().reverse().map(p => `L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join('') + 'Z';
+  const usedArea = line(bot, 1) +
+    `L${last(bot)[0].toFixed(1)} ${baseY}L${bot[0][0].toFixed(1)} ${baseY}Z`;
+  svg.innerHTML =
+    `<path d="${cachedArea}" fill="${cachedColor}" fill-opacity=".45" stroke="none"/>` +
+    `<path d="${usedArea}" fill="${usedColor}" fill-opacity=".5" stroke="none"/>` +
+    `<line x1="0" y1="${baseY}" x2="${w}" y2="${baseY}" stroke="var(--line)"/>`;
+  const axis = svg.parentElement.querySelector('.y-axis');
+  if (axis) {
+    const sp = axis.querySelectorAll('span');
+    if (sp[0]) sp[0].textContent = '100%';
+    if (sp[1]) sp[1].textContent = '50%';
+    if (sp[2]) sp[2].textContent = '0';
+  }
+}
 
 /* ---------- 节点卡片 ---------- */
 function createCard(n, container) {
@@ -384,6 +464,15 @@ function createCard(n, container) {
   e.querySelector('.uptime').innerHTML = '<span class="tag">运行</span> ' + duration(n.uptime);
   container.append(e);
   const card = container.lastElementChild;
+  // 整卡可点：进入单节点详情页。键盘也要能用，所以补 tabindex/role 和 Enter/Space。
+  card.tabIndex = 0;
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', '查看 ' + (n.name || n.hostname || '节点') + ' 的详情');
+  const openDetail = () => { location.hash = '#/node/' + n.id; };
+  card.onclick = openDetail;
+  card.onkeydown = ev => {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDetail(); }
+  };
   // Ping 延迟 + 丢包图（共用同一段区间）
   const ps = card.querySelector('.ping-svg');
   if (ps) pingChart(ps, win);
@@ -440,6 +529,7 @@ function render(nodes) {
 let _lastNodes = null;
 let _lastNodesSig = '';
 async function refresh() {
+  if (_detailId) return;   // 详情页开着时暂停列表轮询，免得两套轮询互相干扰
   try {
     const data = (await api('/api/nodes')).nodes;
     const sig = JSON.stringify(data);
@@ -457,6 +547,7 @@ $('#theme').onclick = () => {
   if (_lastNodes) render(_lastNodes);
 };
 $('#admin').onclick = () => {
+  if (location.hash) location.hash = '';   // 从详情页回列表（hashchange 异步触发路由）
   $('#dashboard').hidden = true; $('#admin-panel').hidden = false;
   updateGroupNav();  // 否则桌面端节点导航会继续悬浮在后台面板上
 };
@@ -464,6 +555,311 @@ $('#back').onclick = () => {
   $('#dashboard').hidden = false; $('#admin-panel').hidden = true;
   updateGroupNav();
 };
+
+/* ---------- 单节点详情页 ---------- */
+const DETAIL_POLL_MS = 5000;
+const DETAIL_DEFAULT_RANGE = 86400;
+let _detailId = null;
+let _detailData = null;
+let _detailRange = DETAIL_DEFAULT_RANGE;
+let _detailTimer = null;
+
+function ago(ts) {
+  const d = Math.max(0, Date.now() / 1000 - (Number(ts) || 0));
+  if (d < 60) return Math.round(d) + ' 秒前';
+  if (d < 3600) return Math.round(d / 60) + ' 分钟前';
+  if (d < 86400) return Math.round(d / 3600) + ' 小时前';
+  return Math.round(d / 86400) + ' 天前';
+}
+
+function clock(ts) {
+  const d = new Date((Number(ts) || 0) * 1000), p = n => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function detailTimer() { return _detailTimer; }   // 测试用：确认关闭后没有遗留定时器
+
+function openDetail(id) {
+  if (_detailId !== id) {
+    _detailId = id;
+    _detailData = null;
+    $('#detail-head').innerHTML = '';
+    $('#detail-spec').innerHTML = '';
+    $('#detail-bars').innerHTML = '';
+    $('#detail-net-stats').innerHTML = '';
+    $('#detail-ping-row').innerHTML = '';
+    $('#detail-title').textContent = '加载中…';
+  }
+  $('#dashboard').hidden = true;
+  $('#admin-panel').hidden = true;
+  $('#node-detail').hidden = false;
+  updateGroupNav();
+  window.scrollTo({ top: 0 });
+  loadDetail();
+  startDetailPolling();
+}
+
+function closeDetail() {
+  _detailId = null;
+  _detailData = null;
+  stopDetailPolling();
+  $('#node-detail').hidden = true;
+  // 后台面板如果开着，就别把仪表盘也显示出来
+  if ($('#admin-panel').hidden) $('#dashboard').hidden = false;
+  updateGroupNav();
+}
+
+function startDetailPolling() {
+  stopDetailPolling();
+  _detailTimer = setInterval(() => { if (_detailId) loadDetail(); }, DETAIL_POLL_MS);
+}
+
+function stopDetailPolling() {
+  if (_detailTimer) { clearInterval(_detailTimer); _detailTimer = null; }
+}
+
+async function loadDetail() {
+  const id = _detailId;
+  if (!id) return;
+  try {
+    const data = await api(`/api/nodes/${encodeURIComponent(id)}?range=${_detailRange}`);
+    if (_detailId !== id) return;   // 期间已经切走/关闭，别用旧响应覆盖新页面
+    _detailData = data;
+    renderDetail(data);
+  } catch (e) {
+    if (_detailId !== id) return;
+    $('#detail-title').textContent = '节点不存在或已删除';
+    $('#detail-head').innerHTML =
+      '<p class="hint">该节点可能已被删除或封禁。' +
+      '<a href="#" id="detail-head-back">返回仪表盘</a></p>';
+    const back = $('#detail-head-back');
+    if (back) back.onclick = ev => { ev.preventDefault(); location.hash = ''; };
+  }
+}
+
+function renderDetail(data) {
+  const n = data.node || {};
+  renderDetailHead(n);
+  renderDetailSpec(n);
+  renderDetailLoad(data);
+  renderDetailNet(n, data.history || []);
+  renderDetailPing(data.ping_history || [], n);
+}
+
+function renderDetailHead(n) {
+  $('#detail-title').textContent = n.name || n.hostname || '未命名节点';
+  const box = $('#detail-head');
+  box.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'detail-head-row';
+  const loc = document.createElement('span');
+  loc.className = 'loc';
+  loc.innerHTML = countryFlag(n.country);      // 只插入正则校验过的国家码
+  const fields = [
+    ['状态', n.online ? '在线' : '离线', 'status ' + (n.online ? 'on' : 'off')],
+    ['IP', n.ip || '—', ''],
+    ['主机名', n.hostname || '—', ''],
+    ['最后上报', n.updated ? ago(n.updated) + '（' + clock(n.updated) + '）' : '—', ''],
+    ['运行时长', n.uptime ? duration(n.uptime) : '—', ''],
+  ];
+  row.append(loc);
+  fields.forEach(([label, value, cls]) => {
+    const w = document.createElement('span');
+    w.className = 'detail-field';
+    const l = document.createElement('em');
+    l.textContent = label;
+    const v = document.createElement('b');
+    v.textContent = value;
+    if (cls) v.className = cls;
+    w.append(l, v);
+    row.append(w);
+  });
+  box.append(row);
+}
+
+function renderDetailSpec(n) {
+  const box = $('#detail-spec');
+  box.innerHTML = '';
+  const rows = [];
+  const str = (label, value) => { const s = String(value == null ? '' : value).trim(); if (s) rows.push([label, s]); };
+  const num = (label, value, fmt) => { const v = Number(value) || 0; if (v > 0) rows.push([label, fmt ? fmt(v) : String(v)]); };
+  // 把若干片段拼成一行；没有片段就不出这一行
+  const grouped = (label, ...parts) => { const s = parts.filter(Boolean).join(' · '); if (s) rows.push([label, s]); };
+  const bitNum = (value, fmt) => { const v = Number(value) || 0; return v > 0 ? (fmt ? fmt(v) : String(v)) : ''; };
+  const bitStr = value => String(value == null ? '' : value).trim();
+
+  str('CPU 型号', n.cpu_model);
+  grouped('CPU 规格',
+    bitNum(n.cpu_cores, v => v + ' 核'), bitStr(n.arch),
+    bitNum(n.cpu_mhz, v => (v / 1000).toFixed(2) + ' GHz'),
+    bitStr(n.cpu_cache) && 'L3 ' + bitStr(n.cpu_cache));
+
+  grouped('操作系统', bitStr(n.os),
+    bitNum(n.os_version_id && (Number(n.os_version_id) || n.os_version_id), v => '版本 ' + v),
+    bitStr(n.os_codename) && '(' + bitStr(n.os_codename) + ')');
+  str('发行版 ID', n.os_id);
+  str('内核版本', n.kernel);
+  str('内核详情', n.kernel_full);
+
+  grouped('进程',
+    bitNum(n.procs, v => v + ' 个进程'), bitNum(n.running, v => v + ' 运行中'),
+    bitNum(n.threads, v => v + ' 线程'));
+
+  grouped('内存',
+    bitNum(n.mem_total, v => bytes(v) + ' 内存'),
+    bitNum(n.swap_total, v => '交换 ' + bytes(v) + (bitNum(n.swap_used) ? '（已用 ' + bytes(n.swap_used) + '）' : '')),
+    bitNum(n.mem_cached, v => '缓存 ' + bytes(v)));
+
+  grouped('磁盘', bitNum(n.disk_total, v => bytes(v) + ' 容量'), bitNum(n.disk, v => '已用 ' + v + '%'));
+
+  grouped('主机',
+    bitStr(n.virt) && bitStr(n.virt) + ' 虚拟化',
+    bitNum(n.load1, () => '负载 ' + (Number(n.load1) || 0) + ' / ' + (Number(n.load5) || 0) + ' / ' + (Number(n.load15) || 0)),
+    bitNum(n.iowait, v => 'iowait ' + v + '%'),
+    bitNum(n.tcp_conn, v => 'TCP 连接 ' + v),
+    bitNum(n.temp_c, v => v + '°C'));
+
+  if (!rows.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = '暂无可用数据。';
+    box.append(p);
+    return;
+  }
+  rows.forEach(([label, value]) => {
+    const r = document.createElement('div');
+    r.className = 'spec-row';
+    const l = document.createElement('em');
+    l.textContent = label;
+    const v = document.createElement('b');
+    v.textContent = value;
+    r.append(l, v);
+    box.append(r);
+  });
+  // 老客户端仍会上报内存/磁盘等旧字段，所以不能靠"整块为空"来判断。
+  // 只要缺 CPU 型号和内核版本，就说明 agent 没升级，补一条提示。
+  if (!bitStr(n.cpu_model) && !bitStr(n.kernel)) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = '该节点客户端版本较旧，未上报 CPU 型号、系统与内核版本。' +
+      '重新执行一次客户端安装命令后即可显示。';
+    box.append(p);
+  }
+}
+
+function renderDetailLoad(data) {
+  const n = data.node || {};
+  const samples = data.history || [];
+  // 大号进度条，和列表页一致
+  const bars = $('#detail-bars');
+  bars.innerHTML = '';
+  [['CPU', n.cpu], ['内存', n.memory], ['磁盘', n.disk]].forEach(([label, value]) => {
+    const v = Math.min(Math.max(Number(value) || 0, 0), 100);
+    const wrap = document.createElement('div');
+    wrap.className = 'bar';
+    const l = document.createElement('label');
+    l.textContent = label;
+    const track = document.createElement('div');
+    track.className = 'bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'bar-fill';
+    fill.style.width = v + '%';
+    fill.style.background = v > 80 ? 'linear-gradient(90deg,#ef4444,#f87171)'
+      : v > 60 ? 'linear-gradient(90deg,#eab308,#facc15)'
+      : 'linear-gradient(90deg,#10b981,#34d399)';
+    track.append(fill);
+    const b = document.createElement('b');
+    b.textContent = v + '%';
+    wrap.append(l, track, b);
+    bars.append(wrap);
+  });
+  const hint = $('#detail-load-hint');
+  if (hint) hint.textContent = PING_RANGE_LABELS[_detailRange] || '';
+  pctLines(document.querySelector('#node-detail .load-svg'), samples, LOAD_SERIES, 96);
+  memChart(document.querySelector('#node-detail .mem-svg'), samples, n.mem_total, 80);
+}
+
+function renderDetailNet(n, samples) {
+  const box = $('#detail-net-stats');
+  box.innerHTML = '';
+  const stats = [
+    ['实时下载', mbps(n.network_rx)],
+    ['实时上传', mbps(n.network_tx)],
+    ['累计流量', bytesTotal(n.net_total_rx, n.net_total_tx) || '—'],
+    ['错误 / 丢包', (Number(n.net_err) || 0) + ' / ' + (Number(n.net_drop) || 0)],
+  ];
+  stats.forEach(([label, value]) => {
+    const s = document.createElement('span');
+    const l = document.createElement('em');
+    l.textContent = label;
+    const v = document.createElement('b');
+    v.textContent = value;
+    s.append(l, v);
+    box.append(s);
+  });
+  const canvas = document.querySelector('#node-detail .net-canvas');
+  if (canvas) requestAnimationFrame(() => networkChart(canvas, samples, n, { count: 300, height: 120 }));
+}
+
+function renderDetailPing(samples, n) {
+  const win = pingWindow({ ping_history: samples, updated: n.updated }, _detailRange);
+  pingChart(document.querySelector('#node-detail .ping-svg'), win, 96);
+  lossChart(document.querySelector('#node-detail .loss-svg'), win, 20);
+  const lv = document.querySelector('#node-detail .loss-val');
+  if (lv) {
+    const st = lossStats(win);
+    lv.textContent = st.total ? st.pct.toFixed(st.pct < 10 ? 1 : 0) + '%' : '—';
+    lv.className = 'loss-val ' + (st.pct === 0 ? 'ok' : st.pct < 5 ? 'warn' : 'bad');
+  }
+  // 三网当前延迟徽章
+  const prow = $('#detail-ping-row');
+  prow.innerHTML = '';
+  const icons = { ct: '电信', cu: '联通', cm: '移动' };
+  ['ct', 'cu', 'cm'].forEach(k => {
+    const v = n['tcp_ping_' + k];
+    if (!v) return;
+    const ms = Number(v);
+    const cls = ms < 0 ? 'timeout' : ms <= 100 ? 'fast' : ms <= 300 ? 'mid' : 'slow';
+    const s = document.createElement('span');
+    s.className = `ping ${k} ${cls}`;
+    s.textContent = `${icons[k]} ${ms < 0 ? '超时' : ms + 'ms'}`;
+    prow.append(s);
+  });
+  // 区间内各运营商丢包率
+  ['ct', 'cu', 'cm'].forEach(k => {
+    let lost = 0, total = 0;
+    win.forEach(s => {
+      const v = Number(s[k]) || 0;
+      if (v < 0) { lost++; total++; } else if (v > 0) total++;
+    });
+    if (!total) return;
+    const pct = Math.round(lost / total * 100);
+    const em = document.createElement('em');
+    em.className = 'loss loss-' + (pct === 0 ? 'ok' : pct < 5 ? 'warn' : 'bad');
+    em.textContent = icons[k] + ' ' + pct + '%';
+    $('#detail-ping-row').append(em);
+  });
+}
+
+/* 路由：只有 #/node/<id> 一种，其余一律回列表 */
+function route() {
+  const m = /^#\/node\/([0-9a-fA-F]{6,64})$/.exec(location.hash || '');
+  if (m) openDetail(m[1]);
+  else closeDetail();
+}
+window.addEventListener('hashchange', route);
+
+$('#detail-back').onclick = () => { location.hash = ''; };
+document.querySelectorAll('#detail-range button').forEach(btn => {
+  btn.onclick = () => {
+    const range = Number(btn.dataset.range) || DETAIL_DEFAULT_RANGE;
+    if (range === _detailRange) return;
+    _detailRange = range;
+    document.querySelectorAll('#detail-range button')
+      .forEach(x => x.classList.toggle('active', x === btn));
+    if (_detailId) loadDetail();
+  };
+});
 
 /* ---------- 管理后台 ---------- */
 $('#login-btn').onclick = async () => {
@@ -747,3 +1143,8 @@ const navObserver = new IntersectionObserver((entries) => {
     });
   });
 }, { rootMargin: '-20% 0px -60% 0px' });
+
+/* ---------- 启动 ---------- */
+// 必须放在最后：route() 会走到 updateGroupNav()，而 navObserver 的 const 在上面才初始化，
+// 提前调用会踩 TDZ 直接抛错（整页白屏）。
+route();          // 支持直达 #/node/<id>（刷新/分享链接）

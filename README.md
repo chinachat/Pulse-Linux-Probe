@@ -17,6 +17,7 @@ real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 - **Ping history chart** — SVG area-gradient chart for CT/CU/CM latency **plus a packet-loss strip** sharing the same time axis; the whole dashboard switches between **1 h / 6 h / 12 h / 24 h** in one click, and the server keeps a full **24 h at 1-minute resolution**
 - **OS detection** — distro icon tinted with the same color as the label via CSS mask + `currentColor` (crisp in both themes)
 - **Region filter** — a tab bar above the grid groups nodes by country (flag + count); picking a region shows only that region's cards
+- **Node detail page** — click any card (or open `#/node/<id>` directly) for a full-page view: CPU model / cores / MHz / L3 cache, distro + version + codename, kernel, process / thread counts, virtualization, swap and buff-cache, load average, plus **1 h / 6 h / 12 h / 24 h** charts for load (CPU/memory/disk), memory composition (used + buff-cache), network rate and latency + packet loss
 - **Floating nav panel** — node anchors with scroll-spy highlighting, mobile slide-out, back-to-top
 - **Encrypted data file** — PBKDF2-HMAC-SHA256 key derivation + SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
 - **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login, ping-target injection guard, node & body size caps
@@ -86,6 +87,7 @@ Set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com`
 | `PROBE_SESSION_TTL` | `43200` (12h) | Admin session lifetime in seconds |
 | `PROBE_OFFLINE_SECONDS` | `90` | Node shown offline after this many seconds without report |
 | `PROBE_MAX_NODES` | `200` | Max node count; protects storage from hostname-flooding |
+| `PROBE_LOAD_HISTORY` | `1440` | Load/network samples kept per node (1/minute, so 1440 = 24 h). Lower it on memory- or storage-constrained hosts |
 | `PROBE_PING_HISTORY` | `1440` | Ping samples kept per node (1/minute, so 1440 = 24 h). Lower it on memory- or storage-constrained hosts |
 | `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for real client IPs. **Only `1`/`true`/`yes`/`on` enable it** — `false`, `0` and an empty value all mean "off" |
 
@@ -93,16 +95,25 @@ Set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com`
 
 Reports every minute via cron:
 
-- CPU (1-second delta sampling), memory usage + total, root disk usage + total
-- Network rx/tx throughput (bytes/sec, loopback excluded) + cumulative totals
-- Uptime, OS name + version (distro icon), country code (cached 24h), CPU cores
+- CPU (1-second delta sampling) + iowait, memory usage + total, root disk usage + total
+- Network rx/tx throughput (bytes/sec, loopback excluded) + cumulative totals + NIC errors/drops
+- Uptime, OS name + full version + codename, kernel, country code (cached 24h), CPU cores
+- Specs: **CPU model**, current MHz, architecture, L3 cache size, virtualization type
+- Load: **load average 1/5/15**, **process / thread / running counts**, swap, buff-cache, available memory
 - TCP ping to three configurable targets (CT/CU/CM)
 
-Country lookup caches result for 24 hours. OS info cached permanently.
-Ping latency history is kept for **1440 samples (24 hours at 1-minute resolution)** server-side
-(`PROBE_PING_HISTORY`); the dashboard plots whatever the selected range needs (1 h / 6 h / 12 h / 24 h).
-`/api/nodes` downsamples the series to at most 240 points — always keeping samples where a carrier
-timed out — so the response size does not grow with the retained history.
+> The spec/load fields are new. Nodes installed with an older agent keep working — the detail page
+> simply omits what was never reported and shows an "older client" hint. **Re-run the client install
+> command on a node to collect them.**
+
+Country lookup caches result for 24 hours. OS info, CPU model and kernel are cached permanently.
+
+Ping history is kept for **1440 samples (24 hours at 1-minute resolution)** server-side
+(`PROBE_PING_HISTORY`), and load/network history for the same window (`PROBE_LOAD_HISTORY`).
+`/api/nodes` (the list view) downsamples to at most 60 rate + 240 ping points — always keeping
+samples where a carrier timed out — and ships only `time/rx/tx` per rate sample, so the response
+size does not grow with the retained history. The full-resolution series for one node comes from
+`/api/nodes/<id>`.
 
 ## Admin console
 
@@ -120,7 +131,8 @@ timed out — so the response size does not grow with the retained history.
 | Endpoint | Auth | Description |
 |---|---|---|
 | `GET /api/health` | none | Health check |
-| `GET /api/nodes` | none | Public node list (masked IPs) |
+| `GET /api/nodes` | none | Public node list (masked IPs); at most 60 rate + 240 ping points per node |
+| `GET /api/nodes/{id}?range=86400` | none | Single-node detail (masked IP): full spec fields + ≤300 load and ≤300 ping points for the window. `range` is clamped to [300, 86400] |
 | `POST /api/report` | `X-API-Key` | Agent report |
 | `POST /api/login` | none | Admin login (returns CSRF token) |
 | `POST /api/logout` | none | Admin logout |

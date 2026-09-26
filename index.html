@@ -47,6 +47,80 @@
   <section id="nodes" class="nodes"></section>
 </main>
 
+<!-- ===================== 节点详情 ===================== -->
+<main id="node-detail" hidden>
+  <section class="hero">
+    <div class="hero-title">
+      <p>&#21333;&#33410;&#28857;&#35814;&#24773;</p>
+      <h1 id="detail-title">&#8212;</h1>
+    </div>
+    <div class="detail-actions">
+      <div class="range-pick" id="detail-range" role="group" aria-label="&#26102;&#38388;&#21306;&#38388;">
+        <span class="range-label">&#21306;&#38388;</span>
+        <button type="button" data-range="3600">1&#23567;&#26102;</button>
+        <button type="button" data-range="21600">6&#23567;&#26102;</button>
+        <button type="button" data-range="43200">12&#23567;&#26102;</button>
+        <button type="button" data-range="86400" class="active">24&#23567;&#26102;</button>
+      </div>
+      <button id="detail-back" class="ghost">&#36820;&#22238;&#20202;&#34920;&#30424;</button>
+    </div>
+  </section>
+
+  <section class="panel" id="detail-head"></section>
+
+  <section class="panel">
+    <h2>&#35268;&#26684;</h2>
+    <div id="detail-spec" class="spec-grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2>&#30828;&#20214;&#36127;&#36733;</h2>
+    <div id="detail-bars" class="metric-row"></div>
+    <div class="chart-block">
+      <div class="chart-head">
+        <span>CPU / &#20869;&#23384; / &#30913;&#30424;</span>
+        <em class="chart-hint" id="detail-load-hint"></em>
+      </div>
+      <div class="chart-body">
+        <div class="y-axis"><span></span><span></span><span></span></div>
+        <svg class="load-svg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+    <div class="chart-block">
+      <div class="chart-head">
+        <span>&#20869;&#23384;&#26500;&#25104;</span>
+        <em class="chart-hint">&#24050;&#29992; / &#32531;&#23384;</em>
+      </div>
+      <div class="chart-body">
+        <div class="y-axis"><span></span><span></span><span></span></div>
+        <svg class="mem-svg" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>&#32593;&#32476;</h2>
+    <div id="detail-net-stats" class="detail-stats"></div>
+    <div class="net-panel">
+      <canvas class="net-canvas detail-net" height="120"></canvas>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>&#24310;&#36831; / &#20002;&#21253;</h2>
+    <div id="detail-ping-row" class="ping-row"></div>
+    <div class="chart-body">
+      <div class="y-axis"><span></span><span></span><span></span></div>
+      <svg class="ping-svg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="loss-row">
+      <span class="loss-tag">&#20002;&#21253;</span>
+      <svg class="loss-svg" viewBox="0 0 600 20" preserveAspectRatio="none"></svg>
+      <b class="loss-val">&#8212;</b>
+    </div>
+  </section>
+</main>
+
 <!-- ===================== 管理后台 ===================== -->
 <main id="admin-panel" hidden>
   <section class="hero">
@@ -192,7 +266,10 @@
       </div>
     </div>
 
-    <div class="card-foot"><span class="uptime"></span></div>
+    <div class="card-foot">
+      <span class="uptime"></span>
+      <span class="card-open">&#35814;&#24773; &#8250;</span>
+    </div>
   </article>
 </template>
 

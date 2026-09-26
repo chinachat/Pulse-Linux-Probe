@@ -200,7 +200,8 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(node["online"])
         self.assertEqual(node["country"], "CN")  # upper-cased
         self.assertEqual(len(node["history"]), 1)
-        self.assertIn("cpu", node["history"][0])
+        # 列表接口只下发画速率曲线要用的字段；完整样本在 /api/nodes/<id>
+        self.assertEqual(set(node["history"][0]), {"time", "rx", "tx"})
 
     def test_08_report_rejects_bad_key(self):
         status, _, _ = http(self.base, "POST", "/api/report",
@@ -505,6 +506,76 @@ class RegressionTest(unittest.TestCase):
             self.assertNotIn("history", n)
             self.assertNotIn("ping_history", n)
             self.assertIn("hostname", n)   # 管理界面需要的字段仍在
+
+    def test_09_detail_endpoint_serves_full_samples(self):
+        # 列表页只给 time/rx/tx，详情页才给完整样本（CPU/内存/负载/缓存都在）
+        key = make_key(self.base, self.admin, "detail")["key"]
+        payload = {"hostname": "detail-node", "cpu": 42, "memory": 61, "disk": 55,
+                   "network_rx": 1234567, "network_tx": 654321,
+                   "load1": 0.42, "mem_cached": 123456789, "swap_used": 1024,
+                   "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+                   "kernel": "6.1.0-18-amd64", "os_version_id": "12",
+                   "os_codename": "bookworm", "procs": 234, "iowait": 3}
+        status, _, raw = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+        self.assertEqual(status, 200)
+        node_id = json.loads(raw)["id"]
+
+        status, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=86400")
+        self.assertEqual(status, 200)
+        body = json.loads(raw)
+        node = body["node"]
+        self.assertEqual(body["range"], 86400)
+        # 规格字段原样带出
+        self.assertEqual(node["kernel"], "6.1.0-18-amd64")
+        self.assertEqual(node["os_codename"], "bookworm")
+        self.assertEqual(node["procs"], 234)
+        self.assertEqual(node["iowait"], 3)
+        self.assertTrue(node["cpu_model"].startswith("Intel(R) Xeon(R)"))
+        # IP 仍然脱敏
+        self.assertEqual(node["ip"], "127.0.*.*")
+        # 完整样本
+        sample = body["history"][0]
+        for key_name in ("time", "rx", "tx", "cpu", "memory", "disk", "load1",
+                         "mem_cached", "swap_used"):
+            self.assertIn(key_name, sample)
+        self.assertEqual(sample["cpu"], 42)
+        self.assertEqual(sample["load1"], 0.42)
+
+    def test_10_detail_endpoint_input_validation(self):
+        # 非法 id / 不存在的 id / 越界 range 都不能 500，也不能回落到别的节点
+        for bad in ("", "not-an-id", "../etc", "ZZZZZZZZ", "a" * 100):
+            status, _, _ = http(self.base, "GET", "/api/nodes/" + bad)
+            self.assertEqual(status, 404, bad)
+        status, _, _ = http(self.base, "GET", "/api/nodes/0123456789abcdef")
+        self.assertEqual(status, 404)   # 格式合法但不存在
+        # range 越界被夹到 [300, 86400]，非法值退回默认 3600
+        key = make_key(self.base, self.admin, "range")["key"]
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "range-node", "cpu": 1}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        for query, expect in (("?range=99999999", 86400), ("?range=1", 300),
+                              ("?range=abc", 3600), ("", 3600), ("?range=-5", 300)):
+            status, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}{query}")
+            self.assertEqual(status, 200, query)
+            self.assertEqual(json.loads(raw)["range"], expect, query)
+
+    def test_11_detail_history_respects_retention_and_point_cap(self):
+        # 详情页也要压到 DETAIL_POINTS 以内，并且窗口裁剪不会裁空
+        key = make_key(self.base, self.admin, "cap")["key"]
+        for i in range(320):
+            http(self.base, "POST", "/api/report",
+                 {"hostname": "cap-node", "cpu": i % 100, "memory": 50, "disk": 50},
+                 {"X-API-Key": key})
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "cap-node", "cpu": 1}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=86400")
+        body = json.loads(raw)
+        self.assertLessEqual(len(body["history"]), 300)
+        self.assertGreater(len(body["history"]), 1)
+        # 窗口比数据还短时至少回退到一个点，而不是空数组
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=300")
+        self.assertGreaterEqual(len(json.loads(raw)["history"]), 1)
 
 
 class DataFileMigrationTest(unittest.TestCase):

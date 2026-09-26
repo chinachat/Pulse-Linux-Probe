@@ -60,29 +60,43 @@ function makeEl(tag = 'div') {
   el.scrollIntoView = () => {};
   el.getContext = () => null;
   el.cloneNode = () => makeEl();
+  el.attributes = {};
+  el.setAttribute = (k, v) => { el.attributes[k] = String(v); };
+  el.getAttribute = k => (k in el.attributes ? el.attributes[k] : null);
+  el.removeAttribute = k => { delete el.attributes[k]; };
   return el;
 }
 
 function loadApp() {
-  const registry = {
-    '#region-tabs': makeEl('nav'),
-    '#nodes': makeEl('section'),
-    '#dashboard': makeEl('main'),
+  // 所有选择器都分到稳定的元素，测试才能检查"到底渲染出了什么"
+  const registry = {};
+  const pick = sel => {
+    if (!registry[sel]) registry[sel] = makeEl();
+    return registry[sel];
   };
   // 区间按钮由 index.html 静态提供，这里按同样的 dataset 造一份
-  const rangeButtons = [3600, 21600, 43200, 86400].map(r => {
+  const mkRange = () => [3600, 21600, 43200, 86400].map(r => {
     const b = makeEl('button');
     b.dataset.range = String(r);
     return b;
   });
+  const rangeButtons = mkRange();
+  const detailRangeButtons = mkRange();
   const document = {
     body: makeEl('body'),
     activeElement: null,
-    querySelector: sel => registry[sel] || makeEl(),
-    querySelectorAll: sel => (sel === '#ping-range button' ? rangeButtons : []),
+    querySelector: pick,
+    querySelectorAll: sel => {
+      if (sel === '#ping-range button') return rangeButtons;
+      if (sel === '#detail-range button') return detailRangeButtons;
+      return [];
+    },
     createElement: tag => makeEl(tag),
   };
   const store = {};
+  // 定时器记账：用来断言"关闭详情后没有遗留轮询"
+  let timerSeq = 0;
+  const timers = new Map();
   const sandbox = {
     document,
     console,
@@ -94,8 +108,12 @@ function loadApp() {
     requestAnimationFrame: () => 0,
     performance: { now: () => 0 },
     devicePixelRatio: 1,
-    setInterval: () => 0,
-    clearInterval: () => {},
+    setInterval: (fn, ms) => { const id = ++timerSeq; timers.set(id, { fn, ms }); return id; },
+    clearInterval: id => { timers.delete(id); },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    scrollTo: () => {},
+    location: { hash: '' },
     getComputedStyle: () => ({ getPropertyValue: () => '#10b981' }),
     IntersectionObserver: function () { this.observe = () => {}; this.disconnect = () => {}; },
     fetch: () => Promise.reject(new Error('no network in tests')),
@@ -108,7 +126,7 @@ function loadApp() {
   sandbox.window = sandbox;
   const ctx = vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(APP_JS, 'utf8'), ctx, { filename: 'app.js' });
-  return { ctx, registry, rangeButtons };
+  return { ctx, registry, sandbox, timers, rangeButtons, detailRangeButtons };
 }
 
 // 顶层 let/const 存在 realm 的全局词法环境里，后续脚本仍可读写
@@ -324,6 +342,224 @@ test('render: 没有节点时显示"暂无节点"', () => {
   ctx.render([]);
   assert.match(registry['#nodes'].childNodes[0].innerHTML, /暂无节点上报/);
   assert.strictEqual(registry['#region-tabs'].hidden, true);
+});
+
+/* ---------------- 单节点详情页 ---------------- */
+const NODE_ID = '0123456789abcdef';
+const flush = () => new Promise(r => setTimeout(r, 0));
+
+function detailPayload(over = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const history = [];
+  for (let i = 0; i < 200; i++) {
+    history.push({ time: now - (200 - i) * 60, rx: 1e6 + i * 100, tx: 5e5 + i * 50,
+                   cpu: 20 + (i % 30), memory: 50 + (i % 20), disk: 55,
+                   load1: 0.4, mem_cached: 1.5e9, swap_used: 0 });
+  }
+  const ping_history = [];
+  for (let i = 0; i < 200; i++) {
+    ping_history.push({ time: now - (200 - i) * 60, ct: 25, cu: 40, cm: i % 50 === 0 ? -1 : 55 });
+  }
+  return {
+    node: Object.assign({
+      id: NODE_ID, name: 'hk-01', hostname: 'hk-01.example.com', country: 'HK',
+      ip: '10.0.*.*', online: true, updated: now, uptime: 864000,
+      os: 'Debian GNU/Linux 12', os_version_id: '12', os_codename: 'bookworm', os_id: 'debian',
+      kernel: '6.1.0-18-amd64', kernel_full: 'Linux 6.1.0-18-amd64 x86_64 GNU/Linux',
+      cpu_model: 'Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz', cpu_cores: 8,
+      cpu_mhz: 2400, cpu_cache: '35840 KB', arch: 'x86_64', virt: 'kvm',
+      procs: 234, running: 3, threads: 412, tcp_conn: 58, iowait: 1,
+      cpu: 24, memory: 61, disk: 55,
+      mem_total: 8589934592, mem_cached: 1.5e9, swap_total: 2147483648, swap_used: 0,
+      disk_total: 107374182400, load1: 0.42, load5: 0.35, load15: 0.30, temp_c: 47,
+      network_rx: 1.2e6, network_tx: 5.5e5,
+      net_total_rx: 1.2e12, net_total_tx: 5.6e11, net_err: 0, net_drop: 0,
+      tcp_ping_ct: 25, tcp_ping_cu: 40, tcp_ping_cm: -1,
+    }, over),
+    range: 86400,
+    history,
+    ping_history,
+  };
+}
+
+function withFetch(ctx, sandbox, payload) {
+  sandbox.fetch = () => Promise.resolve({ ok: true, status: 200, json: async () => payload });
+}
+
+test('详情页：route() 解析 #/node/<id>，非法 hash 回列表', () => {
+  const { ctx, registry } = loadApp();
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  assert.strictEqual(readGlobal(ctx, '_detailId'), NODE_ID);
+  assert.strictEqual(registry['#node-detail'].hidden, false);
+  assert.strictEqual(registry['#dashboard'].hidden, true);
+
+  for (const bad of ['', '#', '#/node/', '#/node/XYZ', '#/node/abc', '#/other']) {
+    vm.runInContext('_detailId = null; closeDetail();', ctx);
+    vm.runInContext(`location.hash = ${JSON.stringify(bad)}; route();`, ctx);
+    assert.strictEqual(readGlobal(ctx, '_detailId'), null, bad);
+    assert.strictEqual(registry['#node-detail'].hidden, true, bad);
+  }
+});
+
+test('详情页：点击卡片写入 hash（键盘 Enter 同样有效）', () => {
+  const { ctx, registry } = loadApp();
+  ctx.render(fakeNodes());
+  const card = registry['#nodes'].childNodes[0];
+  assert.strictEqual(typeof card.onclick, 'function');
+  assert.strictEqual(card.attributes.role, 'button');
+  let navigated = null;
+  // 直接调用 onkeydown，断言它不抛错并触发了跳转逻辑
+  card.onclick();
+  navigated = readGlobal(ctx, 'location.hash');
+  assert.match(navigated, /^#\/node\/[0-9a-f]+$/);
+  assert.doesNotThrow(() => card.onkeydown({ key: 'Enter', preventDefault() {} }));
+  assert.doesNotThrow(() => card.onkeydown({ key: 'x', preventDefault() {} }));
+});
+
+test('详情页：渲染规格 / 负载 / 网络 / 延迟各区块', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, detailPayload());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+
+  assert.strictEqual(registry['#detail-title'].textContent, 'hk-01');
+  const spec = registry['#detail-spec'].childNodes.map(r => r.childNodes[1].textContent).join(' | ');
+  assert.match(spec, /Intel\(R\) Xeon\(R\) CPU E5-2680/);
+  assert.match(spec, /8 核/);
+  assert.match(spec, /6\.1\.0-18-amd64/);
+  assert.match(spec, /bookworm/);
+  assert.match(spec, /234 个进程/);
+  assert.match(spec, /412 线程/);
+  assert.match(spec, /kvm 虚拟化/);
+  assert.match(spec, /L3 35840 KB/);
+
+  // 三条负载曲线 + 上下两条内存堆叠面积
+  const loadSvg = registry['#node-detail .load-svg']._html;
+  assert.strictEqual((loadSvg.match(/<path /g) || []).length, 3);
+  const memSvg = registry['#node-detail .mem-svg']._html;
+  assert.strictEqual((memSvg.match(/<path /g) || []).length, 2);
+
+  // 网络统计与延迟图
+  const net = registry['#detail-net-stats'].childNodes
+    .map(s => s.childNodes[0].textContent + '=' + s.childNodes[1].textContent).join(',');
+  assert.match(net, /累计流量=/);
+  assert.match(net, /错误 \/ 丢包=0 \/ 0/);
+  assert.match(registry['#node-detail .ping-svg']._html, /<path d="M/);
+  assert.match(registry['#node-detail .loss-svg']._html, /<rect /);
+});
+
+test('详情页：老客户端缺字段时不报错，给出升级提示', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  // 老版本 agent：只有旧字段，规格类字段全缺
+  withFetch(ctx, sandbox, detailPayload({
+    cpu_model: '', kernel: '', os_version_id: '', os_codename: '', os_id: '',
+    kernel_full: '', arch: '', cpu_cache: '', virt: '', procs: 0, threads: 0,
+    running: 0, tcp_conn: 0, iowait: 0, cpu_mhz: 0, mem_cached: 0, swap_total: 0,
+    load1: 0, load5: 0, load15: 0,
+  }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-spec'];
+  // 桩元素的 textContent 不会自动聚合子节点，两者都拼进来
+  const summarize = c => c._class + ':' + c.textContent +
+    c.childNodes.map(x => x.textContent).join(' ');
+  const texts = box.childNodes.map(summarize);
+  // 旧字段（内存/磁盘）仍然显示
+  assert.ok(texts.some(t => t.startsWith('spec-row') && /内存/.test(t)), texts.join(' | '));
+  // 不该出现空标签行
+  assert.ok(!texts.some(t => /^spec-row:\s*$/.test(t)), texts.join(' | '));
+  // 缺 CPU 型号/内核 → 追加升级提示
+  assert.ok(texts.some(t => t.startsWith('hint') && /客户端版本较旧/.test(t)), texts.join(' | '));
+  // 图表照常渲染
+  assert.match(registry['#node-detail .load-svg']._html, /<path /);
+});
+
+test('详情页：节点不存在时显示提示而不是白屏', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  sandbox.fetch = () => Promise.resolve({
+    ok: false, status: 404, json: async () => ({ error: 'node not found' }),
+  });
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  assert.match(registry['#detail-title'].textContent, /不存在|已删除/);
+  assert.strictEqual(typeof registry['#detail-head-back'].onclick, 'function');
+});
+
+test('详情页：关闭后停掉轮询，列表轮询恢复', async () => {
+  const { ctx, registry, sandbox, timers } = loadApp();
+  const baseline = timers.size;                 // 启动时的列表/后台定时器
+  withFetch(ctx, sandbox, detailPayload());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  assert.strictEqual(timers.size, baseline + 1, '打开详情应多加一个轮询');
+  assert.ok(readGlobal(ctx, '_detailTimer'));
+
+  vm.runInContext("location.hash = ''; route();", ctx);
+  assert.strictEqual(timers.size, baseline, '关闭详情必须清掉轮询');
+  assert.strictEqual(readGlobal(ctx, '_detailTimer'), null);
+  assert.strictEqual(registry['#node-detail'].hidden, true);
+  assert.strictEqual(registry['#dashboard'].hidden, false);
+});
+
+test('详情页：详情页开着时列表轮询直接返回', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  let calls = 0;
+  sandbox.fetch = () => { calls++; return Promise.resolve({ ok: true, status: 200, json: async () => detailPayload() }); };
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const after = calls;
+  await ctx.refresh();                          // 详情页开着
+  assert.strictEqual(calls, after, '详情页开着时 refresh() 不应再打 /api/nodes');
+  vm.runInContext("location.hash = ''; route();", ctx);
+  await ctx.refresh();
+  assert.strictEqual(calls, after + 1, '回到列表后 refresh() 应恢复');
+});
+
+test('详情页：切换区间会带上新的 range 参数', async () => {
+  const { ctx, sandbox, detailRangeButtons } = loadApp();
+  const urls = [];
+  sandbox.fetch = url => {
+    urls.push(String(url));
+    return Promise.resolve({ ok: true, status: 200, json: async () => detailPayload() });
+  };
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  assert.ok(urls[0].endsWith(`/api/nodes/${NODE_ID}?range=86400`), urls[0]);
+  detailRangeButtons[0].onclick();              // 1 小时
+  await flush();
+  assert.ok(urls[urls.length - 1].endsWith(`/api/nodes/${NODE_ID}?range=3600`), urls[urls.length - 1]);
+});
+
+test('详情页：延迟图用详情页自己的区间，而不是列表页的', async () => {
+  // 回归：pingWindow() 曾经默认吃全局 _pingRange，导致详情页切到 24 小时、
+  // 延迟/丢包图却仍然只画列表页那一档（1 小时）。
+  const { ctx, registry, sandbox } = loadApp();
+  setGlobal(ctx, '_pingRange = 3600;');          // 列表页停在 1 小时
+  withFetch(ctx, sandbox, detailPayload());       // 详情页默认 24 小时
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const bars = (registry['#node-detail .loss-svg']._html.match(/<rect /g) || []).length;
+  assert.ok(bars > 150, `详情页应按自己的 24 小时区间渲染（实际 ${bars} 根柱子）`);
+
+  // 切到 1 小时后应明显变少
+  const { detailRangeButtons } = loadApp();
+  void detailRangeButtons;
+  vm.runInContext('_detailRange = 3600;', ctx);
+  ctx.renderDetailPing(detailPayload().ping_history, { updated: Math.floor(Date.now() / 1000) });
+  const hourBars = (registry['#node-detail .loss-svg']._html.match(/<rect /g) || []).length;
+  assert.ok(hourBars < bars, `1 小时 ${hourBars} 应少于 24 小时 ${bars}`);
+});
+
+test('详情页：切走后旧响应不覆盖新页面', async () => {
+  const { ctx, sandbox, registry } = loadApp();
+  let release;
+  sandbox.fetch = () => new Promise(res => { release = () => res({ ok: true, status: 200, json: async () => detailPayload() }); });
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  vm.runInContext("location.hash = ''; route();", ctx);   // 请求还没回来就关掉
+  release();
+  await flush();
+  assert.strictEqual(registry['#node-detail'].hidden, true);
+  assert.strictEqual(readGlobal(ctx, '_detailId'), null);
 });
 
 test('render: 每张卡片都真的画出了延迟曲线和丢包柱', () => {
