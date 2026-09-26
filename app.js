@@ -389,9 +389,11 @@ function createCard(n, container) {
   card.onkeydown = ev => {
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDetail(); }
   };
-  // Ping 延迟 + 丢包：和详情页同一套柱状图（超时=整高红柱），只是小一号
+  // Ping 延迟折线 + 丢包条（共用同一段区间）
   const ps = card.querySelector('.ping-svg');
-  if (ps) latencyBars(ps, win, 56);
+  if (ps) pingChart(ps, win, 48);
+  const ls = card.querySelector('.loss-svg');
+  if (ls) lossChart(ls, win, 18);
   const hint = card.querySelector('.chart-hint');
   if (hint) hint.textContent = PING_RANGE_LABELS[_pingRange] || '';
   // 网络速率图（等布局完成后绘制，保证 canvas 宽度正确）
@@ -766,6 +768,8 @@ function renderDetailLoad(data) {
   if (hint) hint.textContent = PING_RANGE_LABELS[_detailRange] || '';
   pctLines(document.querySelector('#node-detail .load-svg'), samples, LOAD_SERIES, 96);
   memChart(document.querySelector('#node-detail .mem-svg'), samples, n.mem_total, 80);
+  renderTimeAxis(document.querySelector('#node-detail .load-xaxis'), samples);
+  renderTimeAxis(document.querySelector('#node-detail .mem-xaxis'), samples);
 }
 
 function renderDetailNet(n, samples) {
@@ -794,17 +798,25 @@ function renderDetailPing(samples, n) {
   const win = pingWindow({ ping_history: samples, updated: n.updated }, _detailRange);
   const svg = document.querySelector('#node-detail .ping-svg');
   if (svg) {
-    latencyBars(svg, win, 118);
-    // 框选放大的叠加层；柱子每次重画都要补回来
+    pingChart(svg, win, 96);
+    // 框选放大的叠加层；曲线每次重画都要补回来
     const pick = document.createElementNS
       ? document.createElementNS('http://www.w3.org/2000/svg', 'rect')
       : document.createElement('rect');
     pick.setAttribute('class', 'pick');
     pick.setAttribute('y', '0');
-    pick.setAttribute('height', '118');
+    pick.setAttribute('height', '96');
     pick.setAttribute('visibility', 'hidden');
     svg.append(pick);
   }
+  lossChart(document.querySelector('#node-detail .loss-svg'), win, 18);
+  const lv = document.querySelector('#node-detail .loss-val');
+  if (lv) {
+    const st = lossStats(win);
+    lv.textContent = st.total ? (st.pct < 10 ? st.pct.toFixed(1) : st.pct.toFixed(0)) + '%' : '—';
+    lv.className = 'loss-val ' + (st.pct === 0 ? 'ok' : st.pct < 5 ? 'warn' : 'bad');
+  }
+  renderTimeAxis(document.querySelector('#node-detail .ping-xaxis'), win);
   const winLabel = $('#ping-window');
   if (winLabel) {
     const st = lossStats(win);
@@ -910,85 +922,142 @@ function renderDetailIfaces(n) {
   box.append(table);
 }
 
-/* ---------- 详情页：延迟/丢包柱状图 + 时间轴缩放 ---------- */
-/* 每个采样点画 3 根柱子（电信/联通/移动），柱高 = 延迟；超时画成整高红柱，
-   所以丢包是"看得见的一根红柱"，不需要再单独一条丢包带。 */
-const CARRIERS = [['ct', '电信', '#2979FF'], ['cu', '联通', '#E64A19'], ['cm', '移动', '#00C853']];
-// 一屏最多画多少个"时间桶"。每个桶 3 根柱子，桶太多柱子会细到看不见。
-const BAR_MAX_BUCKETS = 120;
+/* ---------- 延迟折线 + 丢包条 ---------- */
+let _uid = 0;
 
-/* 采样点太密时按时间顺序分桶：延迟取均值，桶内只要有一次超时就整桶标记为超时
-   （宁可把问题显出来，也不要因为平均掉而看不见）。 */
-function bucketSamples(samples, maxBuckets = BAR_MAX_BUCKETS) {
-  if (samples.length <= maxBuckets) return samples;
-  const size = Math.ceil(samples.length / maxBuckets);
-  const out = [];
-  for (let i = 0; i < samples.length; i += size) {
-    const chunk = samples.slice(i, i + size);
-    const agg = { time: chunk[chunk.length >> 1].time };
-    CARRIERS.forEach(([key]) => {
-      let sum = 0, n = 0, lost = 0, seen = 0;
-      chunk.forEach(s => {
-        const v = Number(s[key]) || 0;
-        if (v < 0) { lost++; seen++; } else if (v > 0) { sum += v; n++; seen++; }
-      });
-      agg[key] = seen === 0 ? 0 : (lost ? -1 : sum / n);
-    });
-    out.push(agg);
-  }
-  return out;
-}
-
-function latencyBars(svg, samples, height = 118) {
+function pingChart(svg, samples = [], height = 48) {
   const w = 600, h = height, pad = 4;
-  svg.innerHTML = '';
-  if (!samples.length) return;
-  samples = bucketSamples(samples);
+  if (!svg) return;
+  if (!samples.length) { svg.innerHTML = ''; return; }
   const xs = xPositions(samples, w);
-  const n = samples.length;
-  const step = n > 1 ? Math.abs(xs[1] - xs[0]) : w;
-  const groupW = Math.max(1.5, step * 0.88);
-  const barW = Math.max(0.7, groupW / 3);
-  // 纵轴上限取窗口内的峰值，但至少 50ms，免得全是 1ms 时柱子顶到天
-  const vals = samples.flatMap(s => CARRIERS.map(([k]) => Number(s[k]) || 0)).filter(v => v > 0);
-  const peak = Math.max(50, ...vals);
-  const py = v => h - pad - Math.min(Math.max(Number(v) || 0, 0), peak) / peak * (h - pad * 2);
-  const base = h - pad;
-
-  let html = '';
-  [1, 0.5].forEach(f => {
-    html += `<line x1="0" y1="${py(peak * f).toFixed(1)}" x2="${w}" y2="${py(peak * f).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3"/>`;
+  const all = samples.flatMap(s => ['ct', 'cu', 'cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
+  if (!all.length) { svg.innerHTML = ''; return; }
+  const peak = Math.max(1, ...all);
+  const py = v => h - pad - (Number(v) || 0) / peak * (h - pad * 2);
+  const cs = getComputedStyle(document.body);
+  const colors = {
+    ct: (cs.getPropertyValue('--ping-ct') || '#2979FF').trim(),
+    cu: (cs.getPropertyValue('--ping-cu') || '#E64A19').trim(),
+    cm: (cs.getPropertyValue('--ping-cm') || '#00C853').trim(),
+  };
+  const uid = 'pg' + (++_uid);
+  const baseY = (h - pad).toFixed(1);
+  let html = `<defs>${['ct', 'cu', 'cm'].map(k =>
+    `<linearGradient id="${uid}-${k}" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0" stop-color="${colors[k]}" stop-opacity=".30"/>` +
+    `<stop offset="1" stop-color="${colors[k]}" stop-opacity="0"/>` +
+    `</linearGradient>`).join('')}</defs>`;
+  [[1, '3'], [0.5, '3,3']].forEach(([f, dash]) => {
+    html += `<line x1="0" y1="${py(peak * f).toFixed(1)}" x2="${w}" y2="${py(peak * f).toFixed(1)}" stroke="var(--line)" stroke-dasharray="${dash}"/>`;
   });
-  html += `<line x1="0" y1="${base}" x2="${w}" y2="${base}" stroke="var(--line)"/>`;
-
-  samples.forEach((s, i) => {
-    const gx = xs[i] - groupW / 2;
-    CARRIERS.forEach(([key, , color], ci) => {
-      const v = Number(s[key]) || 0;
-      if (v === 0) return;                       // 该运营商未配置目标
-      const x = Math.min(Math.max(gx + ci * barW, 0), w - barW);
-      if (v < 0) {                               // 超时：整高，红色
-        html += `<rect class="lbar lbar-timeout" x="${x.toFixed(1)}" y="${pad}" ` +
-                `width="${barW.toFixed(1)}" height="${(base - pad).toFixed(1)}"/>`;
-      } else {
-        const y = py(v);
-        html += `<rect class="lbar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" ` +
-                `width="${barW.toFixed(1)}" height="${Math.max(0.8, base - y).toFixed(1)}" fill="${color}"/>`;
-      }
+  html += `<line x1="0" y1="${baseY}" x2="${w}" y2="${baseY}" stroke="var(--line)"/>`;
+  ['ct', 'cu', 'cm'].forEach(k => {
+    const pts = [];
+    samples.forEach((s, i) => {
+      const v = Number(s[k]) || 0;
+      if (v > 0) pts.push([xs[i], py(v)]);
     });
+    if (!pts.length) return;
+    const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
+    const area = line + `L${pts[pts.length - 1][0].toFixed(1)} ${baseY}L${pts[0][0].toFixed(1)} ${baseY}Z`;
+    html += `<path d="${area}" fill="url(#${uid}-${k})" stroke="none"/>`;
+    html += `<path d="${line}" fill="none" stroke="${colors[k]}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
+    const last = pts[pts.length - 1];
+    html += `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.2" fill="${colors[k]}"/>`;
   });
   svg.innerHTML = html;
-
-  const axis = svg.parentElement.querySelector('.y-axis');
+  const axis = svg.parentElement && svg.parentElement.querySelector('.y-axis');
   if (axis) {
-    const sp = axis.querySelectorAll('span');
-    if (sp[0]) sp[0].textContent = Math.round(peak) + 'ms';
-    if (sp[1]) sp[1].textContent = Math.round(peak / 2) + 'ms';
-    if (sp[2]) sp[2].textContent = '0';
+    const spans = axis.querySelectorAll('span');
+    if (spans[0]) spans[0].textContent = Math.round(peak);
+    if (spans[1]) spans[1].textContent = Math.round(peak / 2);
+    if (spans[2]) spans[2].textContent = '0';
   }
 }
 
-// 画框选区域（拖拽时显示），用叠加层而不是重画柱子
+/* 单个采样点的丢包比例（0~1）。0 表示该运营商未配置目标，不计入分母。 */
+function sampleLoss(sample) {
+  let lost = 0, total = 0;
+  ['ct', 'cu', 'cm'].forEach(k => {
+    const v = Number(sample[k]) || 0;
+    if (v < 0) { lost++; total++; } else if (v > 0) total++;
+  });
+  return total ? lost / total : 0;
+}
+
+/* 丢包条：与上方延迟折线共用时间轴。柱子宽度跟随实际时间间隔，
+   抽样后的老数据格子更宽，图才没有说谎。 */
+function lossChart(svg, samples = [], height = 18) {
+  const w = 600, h = height;
+  if (!svg) return;
+  if (!samples.length) { svg.innerHTML = ''; return; }
+  const xs = xPositions(samples, w);
+  let bars = '';
+  for (let i = 0; i < samples.length; i++) {
+    const ratio = sampleLoss(samples[i]);
+    const x0 = xs[i];
+    const x1 = i + 1 < samples.length ? xs[i + 1] : w;
+    const bw = Math.max(1.2, x1 - x0);
+    const bh = ratio > 0 ? Math.max(2.5, ratio * (h - 2)) : 1.2;
+    const cls = ratio >= 1 ? 'bad' : ratio >= 0.34 ? 'warn' : ratio > 0 ? 'low' : 'none';
+    bars += `<rect x="${x0.toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" class="loss-bar ${cls}"/>`;
+  }
+  svg.innerHTML = `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>` + bars;
+}
+
+/* ---------- 详情页：延迟折线 + 丢包条 + 时间轴缩放的刻度 ---------- */
+const CARRIERS = [['ct', '电信', '#2979FF'], ['cu', '联通', '#E64A19'], ['cm', '移动', '#00C853']];
+
+/* 刻度步长：跨度越大格子越粗。
+   一律对齐到本地整点（而不是 UTC 整点），否则半小时时区（如印度 +5:30）
+   标签会落在 :30 上。 */
+function pickTickStep(span) {
+  if (span <= 3600) return { step: 600, fmt: 'HH:MM' };          // ≤1h  → 10 分钟
+  if (span <= 3 * 3600) return { step: 900, fmt: 'HH:MM' };      // ≤3h  → 15 分钟
+  if (span <= 6 * 3600) return { step: 1800, fmt: 'HH:MM' };     // ≤6h  → 30 分钟
+  if (span <= 12 * 3600) return { step: 3600, fmt: 'HH:00' };    // ≤12h → 1 小时
+  if (span <= 86400) return { step: 3600, fmt: 'HH:00' };        // ≤24h → 1 小时
+  return { step: 21600, fmt: 'MM-DD HH' };
+}
+
+function fmtTick(ts, fmt) {
+  const d = new Date(ts * 1000), p = n => String(n).padStart(2, '0');
+  if (fmt === 'HH:MM') return `${p(d.getHours())}:${p(d.getMinutes())}`;
+  if (fmt === 'MM-DD HH') return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}时`;
+  return `${p(d.getHours())}:00`;
+}
+
+/* 时间刻度。SVG 用了 preserveAspectRatio="none"，在里面放文字会被横向拉变形，
+   所以刻度用 HTML 绝对定位叠在图的下面。 */
+function renderTimeAxis(box, samples) {
+  if (!box) return;
+  box.innerHTML = '';
+  if (!samples || samples.length < 2) return;
+  const t0 = Number(samples[0].time) || 0;
+  const t1 = Number(samples[samples.length - 1].time) || 0;
+  if (!(t1 > t0)) return;
+  const span = t1 - t0;
+  const { step, fmt } = pickTickStep(span);
+  const offset = new Date(t0 * 1000).getTimezoneOffset() * 60;   // 秒
+  const ticks = [];
+  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) {
+    ticks.push({ x: (t - t0) / span, label: fmtTick(t, fmt) });
+  }
+  // 宽度不够就抽稀，宁可少几个也不要糊成一片
+  const width = box.clientWidth || 0;
+  const maxTicks = width ? Math.max(2, Math.floor(width / 46)) : ticks.length;
+  const stride = Math.max(1, Math.ceil(ticks.length / maxTicks));
+  ticks.forEach((tick, i) => {
+    if (i % stride) return;
+    const el = document.createElement('span');
+    el.className = 'tick';
+    el.style.left = (tick.x * 100).toFixed(3) + '%';
+    el.textContent = tick.label;
+    box.append(el);
+  });
+}
+
+// 画框选区域（拖拽时显示），用叠加层而不是重画曲线
 function drawSelection(svg, x0, x1) {
   const rect = svg.querySelector('.pick');
   if (!rect) return;

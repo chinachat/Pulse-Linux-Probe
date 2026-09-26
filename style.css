@@ -402,9 +402,41 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .y-axis { display: flex; flex-direction: column; justify-content: space-between; width: 30px; flex-shrink: 0; padding: 2px 4px 4px 0; }
 .y-axis span { font: 8px var(--font-mono); color: var(--muted); text-align: right; line-height: 1; }
 
-/* ---------- 延迟/丢包柱状图 + 时间轴缩放 ---------- */
-.lbar { shape-rendering: crispEdges; }
-.lbar-timeout { fill: #ef4444; opacity: .5; }
+/* ---------- 丢包条（与延迟折线共用时间轴） ---------- */
+.loss-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-left: 30px;   /* 与上方延迟图的数据区左边界对齐（跳过 y 轴宽度） */
+}
+.loss-tag { color: var(--muted); font: 10px var(--font-mono); flex-shrink: 0; }
+.loss-svg { display: block; flex: 1; min-width: 0; height: 18px; }
+.loss-val { font: 600 10px var(--font-mono); flex-shrink: 0; min-width: 34px; text-align: right; color: var(--muted); }
+.loss-val.ok { color: var(--muted); }
+.loss-val.warn { color: #f59e0b; }
+.loss-val.bad { color: #ef4444; }
+.loss-bar.none { fill: var(--line); }
+.loss-bar.low { fill: #10b981; opacity: .75; }
+.loss-bar.warn { fill: #f59e0b; }
+.loss-bar.bad { fill: #ef4444; }
+
+/* ---------- 时间轴刻度 ---------- */
+/* 刻度用 HTML 绝对定位，不画进 SVG：SVG 是 preserveAspectRatio="none"，
+   里面的文字会被横向拉变形。左内边距对齐上方跳过 y 轴的 30px。 */
+.x-axis-wrap { padding-left: 30px; margin-top: 2px; }
+.x-axis { position: relative; height: 13px; }
+.x-axis .tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font: 9px var(--font-mono);
+  color: var(--muted);
+  white-space: nowrap;
+  opacity: .85;
+}
+
+/* ---------- 时间轴缩放 ---------- */
 .pick { fill: var(--accent, #10b981); opacity: .16; pointer-events: none; }
 .ping-legend { display: inline-flex; align-items: center; gap: 10px; }
 .ping-legend .lg {

@@ -86,6 +86,7 @@
         <div class="y-axis"><span></span><span></span><span></span></div>
         <svg class="load-svg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
       </div>
+      <div class="x-axis-wrap"><div class="x-axis load-xaxis"></div></div>
     </div>
     <div class="chart-block">
       <div class="chart-head">
@@ -96,6 +97,7 @@
         <div class="y-axis"><span></span><span></span><span></span></div>
         <svg class="mem-svg" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
       </div>
+      <div class="x-axis-wrap"><div class="x-axis mem-xaxis"></div></div>
     </div>
   </section>
 
@@ -131,7 +133,13 @@
     </div>
     <div class="chart-body">
       <div class="y-axis"><span></span><span></span><span></span></div>
-      <svg class="ping-svg" viewBox="0 0 600 118" preserveAspectRatio="none"></svg>
+      <svg class="ping-svg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="x-axis-wrap"><div class="x-axis ping-xaxis"></div></div>
+    <div class="loss-row">
+      <span class="loss-tag">&#20002;&#21253;</span>
+      <svg class="loss-svg" viewBox="0 0 600 18" preserveAspectRatio="none"></svg>
+      <b class="loss-val">&#8212;</b>
     </div>
     <p class="hint">
       &#22312;&#22270;&#19978;&#27178;&#21521;&#25302;&#25341;&#21487;&#26694;&#36873;&#26102;&#27573;&#25918;&#22823;&#65292;
@@ -288,7 +296,13 @@
       </div>
       <div class="chart-body">
         <div class="y-axis"><span></span><span></span><span></span></div>
-        <svg class="ping-svg" viewBox="0 0 600 56" preserveAspectRatio="none"></svg>
+        <svg class="ping-svg" viewBox="0 0 600 48" preserveAspectRatio="none"></svg>
+      </div>
+      <!-- 丢包：与上方延迟图共用时间轴 -->
+      <div class="loss-row">
+        <span class="loss-tag">&#20002;&#21253;</span>
+        <svg class="loss-svg" viewBox="0 0 600 18" preserveAspectRatio="none"></svg>
+        <b class="loss-val">&#8212;</b>
       </div>
     </div>
 

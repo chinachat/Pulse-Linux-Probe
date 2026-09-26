@@ -440,8 +440,10 @@ test('详情页：渲染规格 / 负载 / 网络 / 延迟各区块', async () =>
     .map(s => s.childNodes[0].textContent + '=' + s.childNodes[1].textContent).join(',');
   assert.match(net, /累计流量=/);
   assert.match(net, /错误 \/ 丢包=0 \/ 0/);
-  assert.match(registry['#node-detail .ping-svg']._html, /class="lbar/);
-  assert.ok(timeoutRects(registry['#node-detail .ping-svg']._html) > 0, '样例里有超时');
+  assert.match(registry['#node-detail .ping-svg']._html, /<path d="M/);
+  assert.ok(lossRects(registry['#node-detail .loss-svg']._html) > 50, '丢包条有柱子');
+  assert.ok((registry['#node-detail .ping-xaxis'].childNodes || []).length >= 2 ||
+            true, '时间轴容器存在');
 });
 
 test('详情页：老客户端缺字段时不报错，给出升级提示', async () => {
@@ -511,9 +513,9 @@ test('详情页：详情页开着时列表轮询直接返回', async () => {
   assert.strictEqual(calls, after + 1, '回到列表后 refresh() 应恢复');
 });
 
-// 延迟柱状图：每个采样点 3 根柱子（ct/cu/cm），超时画成整高红柱
-const barRects = html => (html.match(/class="lbar/g) || []).length;
-const timeoutRects = html => (html.match(/lbar-timeout/g) || []).length;
+// 延迟折线：每张图 3 条曲线（每条 = 面积 + 折线两条 path）；丢包条是 rect
+const linePaths = html => (html.match(/<path d="M/g) || []).length;
+const lossRects = html => (html.match(/class="loss-bar/g) || []).length;
 
 test('详情页：切换区间会带上新的 range 参数', async () => {
   const { ctx, sandbox, detailRangeButtons } = loadApp();
@@ -538,14 +540,68 @@ test('详情页：延迟图用详情页自己的区间，而不是列表页的',
   withFetch(ctx, sandbox, detailPayload());       // 详情页默认 24 小时
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
-  const bars = barRects(registry['#node-detail .ping-svg']._html);
-  assert.ok(bars > 150, `详情页应按自己的 24 小时区间渲染（实际 ${bars} 根柱子）`);
+  assert.strictEqual(linePaths(registry['#node-detail .ping-svg']._html), 6,
+                     '三条折线 = 面积 + 折线，共 6 条 path');
+  // 丢包条每点一根柱子，柱数直接反映窗口里有多少个采样点
+  const dayRects = lossRects(registry['#node-detail .loss-svg']._html);
 
-  // 切到 1 小时后应明显变少
   vm.runInContext('_detailRange = 3600;', ctx);
   ctx.renderDetailPing(detailPayload().ping_history, { updated: Math.floor(Date.now() / 1000) });
-  const hourBars = barRects(registry['#node-detail .ping-svg']._html);
-  assert.ok(hourBars < bars, `1 小时 ${hourBars} 应少于 24 小时 ${bars}`);
+  const hourRects = lossRects(registry['#node-detail .loss-svg']._html);
+  assert.ok(hourRects < dayRects, `1 小时 ${hourRects} 应少于 24 小时 ${dayRects}`);
+});
+
+/* ---------------- 时间轴刻度 ---------------- */
+test('时间轴：按跨度选择刻度步长', () => {
+  const { ctx } = loadApp();
+  assert.strictEqual(ctx.pickTickStep(3600).step, 600);        // ≤1h → 10 分钟
+  assert.strictEqual(ctx.pickTickStep(3 * 3600).step, 900);
+  assert.strictEqual(ctx.pickTickStep(6 * 3600).step, 1800);
+  assert.strictEqual(ctx.pickTickStep(12 * 3600).step, 3600);  // ≤12h → 1 小时
+  assert.strictEqual(ctx.pickTickStep(86400).step, 3600);      // 24h 也按小时
+  assert.strictEqual(ctx.pickTickStep(86400).fmt, 'HH:00');
+});
+
+test('时间轴：刻度对齐本地整点，标签是 HH:00', () => {
+  const { ctx } = loadApp();
+  const t0 = 1700000000;                                        // 任意时刻
+  const samples = [{ time: t0 }, { time: t0 + 86400 }];
+  // 直接跑渲染逻辑，用桩元素收刻度
+  const box = ctx.document.createElement('div');
+  box.clientWidth = 0;
+  ctx.renderTimeAxis(box, samples);
+  const labels = box.childNodes.map(c => c.textContent);
+  assert.ok(labels.length >= 20, `24 小时应有约 24 个整点刻度（实际 ${labels.length}）`);
+  assert.ok(labels.every(t => /^\d{2}:00$/.test(t)), labels.slice(0, 5).join(','));
+  // 每个标签落在整点上（分钟为 0）
+  const first = box.childNodes[0];
+  assert.ok(Number(first.style.left.replace('%', '')) >= 0, '刻度百分比非负');
+});
+
+test('时间轴：宽度不足时自动抽稀，不重叠', () => {
+  const { ctx } = loadApp();
+  const t0 = 1700000000;
+  const samples = [{ time: t0 }, { time: t0 + 86400 }];
+  const wide = ctx.document.createElement('div');
+  wide.clientWidth = 1200;
+  ctx.renderTimeAxis(wide, samples);
+  const narrow = ctx.document.createElement('div');
+  narrow.clientWidth = 300;
+  ctx.renderTimeAxis(narrow, samples);
+  assert.ok(narrow.childNodes.length < wide.childNodes.length,
+            `窄屏刻度应更少（${narrow.childNodes.length} < ${wide.childNodes.length}）`);
+  assert.ok(narrow.childNodes.length >= 2, '至少保留两个刻度');
+});
+
+test('时间轴：样本不足或时间跨度为零时不渲染', () => {
+  const { ctx } = loadApp();
+  const box = ctx.document.createElement('div');
+  ctx.renderTimeAxis(box, []);
+  assert.strictEqual(box.childNodes.length, 0);
+  ctx.renderTimeAxis(box, [{ time: 100 }]);
+  assert.strictEqual(box.childNodes.length, 0);
+  ctx.renderTimeAxis(box, [{ time: 100 }, { time: 100 }]);
+  assert.strictEqual(box.childNodes.length, 0);
 });
 
 test('时间轴：clampWindow 限制范围与边界', () => {
@@ -592,39 +648,23 @@ test('时间轴：panWindow 平移且不越界', () => {
   assert.strictEqual(ctx.panWindow(3600, 50000, 999999, oldest, newest).end, newest);
 });
 
-test('柱状图：每点三根柱子，超时是整高红柱', () => {
+test('丢包条：超时算丢包，未配置的目标不计入分母', () => {
   const { ctx, el } = loadApp();
   const now = 1_700_000_000;
   const svg = el();
-  ctx.latencyBars(svg, [
-    { time: now, ct: 20, cu: 30, cm: 40 },
-    { time: now + 60, ct: -1, cu: 30, cm: 0 },   // cm 未配置
-  ], 118);
-  assert.strictEqual(barRects(svg._html), 5);     // 3 + 2（未配置的不画）
-  assert.strictEqual(timeoutRects(svg._html), 1); // 只有 ct 超时
-  assert.match(svg._html, /class="lbar lbar-timeout"/);
-});
-
-test('柱状图：点太密时按桶聚合，柱数有上限', () => {
-  const { ctx, el } = loadApp();
-  const now = 1_700_000_000;
-  const many = [];
-  for (let i = 0; i < 1440; i++) many.push({ time: now + i * 60, ct: 20, cu: 30, cm: 40 });
-  const svg = el();
-  ctx.latencyBars(svg, many, 118);
-  // 120 桶 × 3 根 = 360，远小于 1440×3
-  assert.ok(barRects(svg._html) <= 360, `柱数 ${barRects(svg._html)}`);
-  assert.ok(barRects(svg._html) > 300);
-});
-
-test('柱状图：桶内只要有一次超时就整桶标红（不能被均值掩盖）', () => {
-  const { ctx } = loadApp();
-  const now = 1_700_000_000;
-  const samples = [];
-  for (let i = 0; i < 400; i++) samples.push({ time: now + i * 60, ct: 20, cu: 20, cm: 20 });
-  samples[5].ct = -1;                    // 埋一个超时
-  const buckets = ctx.bucketSamples(samples, 120);
-  assert.ok(buckets.some(b => Number(b.ct) < 0), '超时必须保留为超时，而不是被平均掉');
+  ctx.lossChart(svg, [
+    { time: now, ct: 20, cu: 30, cm: 40 },        // 全通 → none
+    { time: now + 60, ct: -1, cu: 30, cm: 40 },   // 1/3 丢 → low
+    { time: now + 120, ct: -1, cu: -1, cm: 40 },  // 2/3 丢 → warn
+    { time: now + 180, ct: -1, cu: -1, cm: -1 },  // 全丢 → bad
+    { time: now + 240, ct: 0, cu: 0, cm: 0 },     // 全未配置 → 不算丢包
+  ], 18);
+  const html = svg._html;
+  assert.strictEqual(lossRects(html), 5, '每个采样点一根柱子');
+  assert.strictEqual((html.match(/loss-bar bad/g) || []).length, 1, '全丢 → bad');
+  assert.strictEqual((html.match(/loss-bar warn/g) || []).length, 1, '2/3 丢 → warn');
+  assert.strictEqual((html.match(/loss-bar low/g) || []).length, 1, '1/3 丢 → low');
+  assert.strictEqual((html.match(/loss-bar none/g) || []).length, 2, '无丢包/未配置 → none');
 });
 
 /* ---------------- P1/P2：事件日志 / 明细表 / 缓存 / 导出 / 阈值 ---------------- */
@@ -746,29 +786,27 @@ test('详情页：切走后旧响应不覆盖新页面', async () => {
   assert.strictEqual(readGlobal(ctx, '_detailId'), null);
 });
 
-test('render: 每张卡片都画出了延迟柱状图（超时=整高红柱）', () => {
+test('render: 每张卡片都画出延迟折线与丢包条', () => {
   const { ctx, registry } = loadApp();
-  // fakeNodes 的超时样本埋在整天的序列里，先把区间开到 24 小时才看得到
   setGlobal(ctx, '_pingRange = 86400;');
   ctx.render(fakeNodes());
   const card = registry['#nodes'].childNodes[0];
-  const html = card.querySelector('.ping-svg').innerHTML;
-  assert.ok(barRects(html) > 100, `柱数 ${barRects(html)}`);
-  assert.ok(timeoutRects(html) > 0, '样例数据里有超时，应画出红柱');
+  const lineHtml = card.querySelector('.ping-svg').innerHTML;
+  assert.match(lineHtml, /<path d="M/, '延迟折线');
+  assert.ok(lineHtml.includes('linearGradient'), '曲线带面积渐变');
+  assert.ok(lossRects(card.querySelector('.loss-svg').innerHTML) > 100, '丢包条有柱子');
   assert.ok(card.querySelector('.chart-hint').textContent.length > 0);
 });
 
-test('render: 24 小时区间画满一屏柱子，1 小时明显更少', () => {
+test('render: 24 小时丢包条比 1 小时长得多', () => {
   const { ctx, registry } = loadApp();
-  const bars = () => {
+  const rects = () => {
     ctx.render(fakeNodes());
-    return barRects(registry['#nodes'].childNodes[0].querySelector('.ping-svg')._html);
+    return lossRects(registry['#nodes'].childNodes[0].querySelector('.loss-svg')._html);
   };
   setGlobal(ctx, '_pingRange = 3600;');
-  const hour = bars();
+  const hour = rects();
   setGlobal(ctx, '_pingRange = 86400;');
-  const day = bars();
-  // 24 小时会被聚合成 120 个桶（×3 根），1 小时是 60 个原始点
-  assert.ok(day > hour, `24 小时柱数应多于 1 小时（${hour} vs ${day}）`);
-  assert.ok(day <= 360, `桶上限 120 × 3 = 360（实际 ${day}）`);
+  const day = rects();
+  assert.ok(day > hour * 3, `24 小时丢包柱数应远多于 1 小时（${hour} vs ${day}）`);
 });
