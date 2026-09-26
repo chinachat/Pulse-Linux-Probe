@@ -62,7 +62,6 @@
         <button type="button" data-range="43200">12&#23567;&#26102;</button>
         <button type="button" data-range="86400" class="active">24&#23567;&#26102;</button>
       </div>
-      <button id="detail-csv" class="ghost">&#23548;&#20986; CSV</button>
       <button id="detail-share" class="ghost">&#20998;&#20139;</button>
       <button id="detail-back" class="ghost">&#36820;&#22238;&#20202;&#34920;&#30424;</button>
     </div>
@@ -115,30 +114,36 @@
   <section class="panel">
     <h2>&#24310;&#36831; / &#20002;&#21253;</h2>
     <div id="detail-ping-row" class="ping-row"></div>
+    <div class="chart-head">
+      <span class="ping-legend">
+        <i class="lg lg-ct"></i>&#30005;&#20449;
+        <i class="lg lg-cu"></i>&#32852;&#36890;
+        <i class="lg lg-cm"></i>&#31227;&#21160;
+        <i class="lg lg-timeout"></i>&#36229;&#26102;
+      </span>
+      <span class="zoom-tools">
+        <button type="button" id="ping-out" title="&#32553;&#23567;&#26102;&#38388;&#36724;">&#8722;</button>
+        <button type="button" id="ping-left" title="&#21521;&#26089;&#24179;&#31227;">&#8592;</button>
+        <button type="button" id="ping-right" title="&#21521;&#36817;&#24179;&#31227;">&#8594;</button>
+        <button type="button" id="ping-in" title="&#25918;&#22823;&#26102;&#38388;&#36724;">&#43;</button>
+        <button type="button" id="ping-reset">&#26368;&#26032;</button>
+      </span>
+    </div>
     <div class="chart-body">
       <div class="y-axis"><span></span><span></span><span></span></div>
-      <svg class="ping-svg" viewBox="0 0 600 96" preserveAspectRatio="none"></svg>
+      <svg class="ping-svg" viewBox="0 0 600 118" preserveAspectRatio="none"></svg>
     </div>
-    <div class="loss-row">
-      <span class="loss-tag">&#20002;&#21253;</span>
-      <svg class="loss-svg" viewBox="0 0 600 20" preserveAspectRatio="none"></svg>
-      <b class="loss-val">&#8212;</b>
-    </div>
+    <p class="hint">
+      &#22312;&#22270;&#19978;&#27178;&#21521;&#25302;&#25341;&#21487;&#26694;&#36873;&#26102;&#27573;&#25918;&#22823;&#65292;
+      Ctrl/&#8984; + &#28378;&#36718;&#21487;&#32553;&#25918;&#65292;
+      <span id="ping-window"></span>
+    </p>
   </section>
 
   <section class="panel">
     <h2>&#20107;&#20214;&#26085;&#24535;</h2>
     <p class="hint">&#25353;&#24403;&#21069;&#21306;&#38388;&#20174;&#21382;&#21490;&#25353;&#38656;&#25512;&#23548;&#65292;&#19981;&#39069;&#22806;&#21344;&#23384;&#20648;&#12290;&#38408;&#20540;&#21487;&#22312;&#21518;&#21488;&#35843;&#25972;&#12290;</p>
     <div id="detail-events" class="event-list"></div>
-  </section>
-
-  <section class="panel">
-    <div class="chart-head">
-      <h2>&#37319;&#26679;&#26126;&#32454;</h2>
-      <span class="chart-hint" id="detail-table-hint"></span>
-    </div>
-    <div id="detail-table" class="table-wrap"></div>
-    <div id="detail-pager" class="table-pager"></div>
   </section>
 </main>
 
@@ -242,7 +247,6 @@
         <span class="loc"></span>
       </div>
       <div class="node-badges">
-        <span class="ip"></span>
         <span class="status"></span>
         <span class="os"></span>
       </div>
@@ -284,13 +288,7 @@
       </div>
       <div class="chart-body">
         <div class="y-axis"><span></span><span></span><span></span></div>
-        <svg class="ping-svg" viewBox="0 0 600 48" preserveAspectRatio="none"></svg>
-      </div>
-      <!-- 丢包：与上方延迟图共用时间轴，每根柱子 = 该时刻有多少运营商超时 -->
-      <div class="loss-row">
-        <span class="loss-tag">&#20002;&#21253;</span>
-        <svg class="loss-svg" viewBox="0 0 600 18" preserveAspectRatio="none"></svg>
-        <b class="loss-val">&#8212;</b>
+        <svg class="ping-svg" viewBox="0 0 600 56" preserveAspectRatio="none"></svg>
       </div>
     </div>
 

@@ -94,9 +94,7 @@ function osIcon(os) {
   return `<span class="os-tag ${cls}"><span class="os-svg" aria-hidden="true"></span><b>${label}</b>${ver}</span>`;
 }
 
-/* ---------- Ping 历史图（SVG 折线 + 面积渐变 + 端点） ---------- */
-let _uid = 0;
-
+/* ---------- 时间轴与统计工具 ---------- */
 /* 时间轴定位。服务端为兼顾"1 天"和"1 小时"两种尺度，下发的采样点疏密不均
    （最近 60 个是 1 分钟粒度，更早的是抽样点），所以横坐标必须按真实时间算，
    不能按序号等距——否则图上的"斜线"其实只是采样密度变化。 */
@@ -109,16 +107,6 @@ function xPositions(samples, w) {
   return samples.map((_, i) => i * w / (n - 1));
 }
 
-/* 单个采样点的丢包比例（0~1）。0 表示该运营商未配置目标，不计入分母。 */
-function sampleLoss(sample) {
-  let lost = 0, total = 0;
-  ['ct', 'cu', 'cm'].forEach(k => {
-    const v = Number(sample[k]) || 0;
-    if (v < 0) { lost++; total++; } else if (v > 0) total++;
-  });
-  return total ? lost / total : 0;
-}
-
 /* 区间内的真实丢包率：失败探测数 / 总探测数 */
 function lossStats(samples) {
   let lost = 0, total = 0;
@@ -127,77 +115,6 @@ function lossStats(samples) {
     if (v < 0) { lost++; total++; } else if (v > 0) total++;
   }));
   return { lost, total, pct: total ? lost / total * 100 : 0 };
-}
-
-function pingChart(svg, samples = [], height = 48) {
-  const w = 600, h = height, pad = 4;
-  if (!samples.length) { svg.innerHTML = ''; return; }
-  const xs = xPositions(samples, w);
-  const all = samples.flatMap(s => ['ct', 'cu', 'cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
-  if (!all.length) { svg.innerHTML = ''; return; }
-  const peak = Math.max(1, ...all);
-  const py = v => h - pad - (Number(v) || 0) / peak * (h - pad * 2);
-  const cs = getComputedStyle(document.body);
-  const colors = {
-    ct: (cs.getPropertyValue('--ping-ct') || '#2979FF').trim(),
-    cu: (cs.getPropertyValue('--ping-cu') || '#E64A19').trim(),
-    cm: (cs.getPropertyValue('--ping-cm') || '#00C853').trim(),
-  };
-  const uid = 'pg' + (++_uid);
-  const baseY = (h - pad).toFixed(1);
-  let html = `<defs>${['ct', 'cu', 'cm'].map(k =>
-    `<linearGradient id="${uid}-${k}" x1="0" y1="0" x2="0" y2="1">` +
-    `<stop offset="0" stop-color="${colors[k]}" stop-opacity=".30"/>` +
-    `<stop offset="1" stop-color="${colors[k]}" stop-opacity="0"/>` +
-    `</linearGradient>`).join('')}</defs>`;
-  // 网格线
-  [[1, '3'], [0.5, '3,3']].forEach(([f, dash]) => {
-    html += `<line x1="0" y1="${py(peak * f).toFixed(1)}" x2="${w}" y2="${py(peak * f).toFixed(1)}" stroke="var(--line)" stroke-dasharray="${dash}"/>`;
-  });
-  html += `<line x1="0" y1="${baseY}" x2="${w}" y2="${baseY}" stroke="var(--line)"/>`;
-  // 三条曲线
-  ['ct', 'cu', 'cm'].forEach(k => {
-    const pts = [];
-    samples.forEach((s, i) => {
-      const v = Number(s[k]) || 0;
-      if (v > 0) pts.push([xs[i], py(v)]);
-    });
-    if (!pts.length) return;
-    const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
-    const area = line + `L${pts[pts.length - 1][0].toFixed(1)} ${baseY}L${pts[0][0].toFixed(1)} ${baseY}Z`;
-    html += `<path d="${area}" fill="url(#${uid}-${k})" stroke="none"/>`;
-    html += `<path d="${line}" fill="none" stroke="${colors[k]}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`;
-    const last = pts[pts.length - 1];
-    html += `<circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.2" fill="${colors[k]}"/>`;
-  });
-  svg.innerHTML = html;
-  // Y 轴标签
-  const axis = svg.parentElement.querySelector('.y-axis');
-  if (axis) {
-    const spans = axis.querySelectorAll('span');
-    if (spans[0]) spans[0].textContent = Math.round(peak);
-    if (spans[1]) spans[1].textContent = Math.round(peak / 2);
-    if (spans[2]) spans[2].textContent = '0';
-  }
-}
-
-/* ---------- 丢包图（与延迟图共用时间轴） ---------- */
-function lossChart(svg, samples = [], height = 18) {
-  const w = 600, h = height;
-  if (!samples.length) { svg.innerHTML = ''; return; }
-  const xs = xPositions(samples, w);
-  let bars = '';
-  for (let i = 0; i < samples.length; i++) {
-    const ratio = sampleLoss(samples[i]);
-    const x0 = xs[i];
-    const x1 = i + 1 < samples.length ? xs[i + 1] : w;
-    // 柱子宽度跟随实际时间间隔：抽样后的老数据格子更宽，图才没有说谎
-    const bw = Math.max(1.2, x1 - x0);
-    const bh = ratio > 0 ? Math.max(2.5, ratio * (h - 2)) : 1.2;
-    const cls = ratio >= 1 ? 'bad' : ratio >= 0.34 ? 'warn' : ratio > 0 ? 'low' : 'none';
-    bars += `<rect x="${x0.toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" class="loss-bar ${cls}"/>`;
-  }
-  svg.innerHTML = `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>` + bars;
 }
 
 /* ---------- 实时网络速率图（canvas 面积渐变 + 双曲线） ---------- */
@@ -414,7 +331,6 @@ function createCard(n, container) {
   e.querySelector('strong').textContent = n.name || n.hostname || '未命名节点';
   e.querySelector('.loc').innerHTML = countryFlag(n.country);
   e.querySelector('i').className = n.online ? '' : 'offline';
-  e.querySelector('.ip').textContent = n.ip;
   e.querySelector('.status').textContent = n.online ? '在线' : '离线';
   e.querySelector('.status').className = 'status ' + (n.online ? 'on' : 'off');
   // OS 标签（图标为 span，颜色由 CSS mask + currentColor 控制，与文字同步）
@@ -473,17 +389,9 @@ function createCard(n, container) {
   card.onkeydown = ev => {
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openDetail(); }
   };
-  // Ping 延迟 + 丢包图（共用同一段区间）
+  // Ping 延迟 + 丢包：和详情页同一套柱状图（超时=整高红柱），只是小一号
   const ps = card.querySelector('.ping-svg');
-  if (ps) pingChart(ps, win);
-  const ls = card.querySelector('.loss-svg');
-  if (ls) lossChart(ls, win);
-  const lv = card.querySelector('.loss-val');
-  if (lv) {
-    const st = lossStats(win);
-    lv.textContent = st.total ? st.pct.toFixed(st.pct < 10 ? 1 : 0) + '%' : '—';
-    lv.className = 'loss-val ' + (st.pct === 0 ? 'ok' : st.pct < 5 ? 'warn' : 'bad');
-  }
+  if (ps) latencyBars(ps, win, 56);
   const hint = card.querySelector('.chart-hint');
   if (hint) hint.textContent = PING_RANGE_LABELS[_pingRange] || '';
   // 网络速率图（等布局完成后绘制，保证 canvas 宽度正确）
@@ -559,21 +467,23 @@ $('#back').onclick = () => {
 /* ---------- 单节点详情页 ---------- */
 const DETAIL_POLL_MS = 5000;
 const DETAIL_DEFAULT_RANGE = 86400;
-const DETAIL_TABLE_PAGE = 25;
 const DETAIL_CACHE_MS = 120000;   // 缓存 2 分钟：够"来回切区间"用，又不会显示太旧的数据
 let _detailId = null;
 let _detailData = null;
 let _detailRange = DETAIL_DEFAULT_RANGE;
+let _detailEnd = null;            // 窗口右端；null = 贴着现在
+let _detailExtent = { oldest: 0, newest: 0 };
 let _detailTimer = null;
-let _detailShownKey = null;       // 当前已渲染的 id:range，用来决定是否先用缓存顶一下
-let _detailPage = 0;
-let _detailRows = [];             // 合并后的采样明细（时间倒序）
+let _detailShownKey = null;       // 当前已渲染的 id:range:end，用来决定是否先用缓存顶一下
 const _detailCache = new Map();
 
-function cacheKey(id, range) { return id + ':' + range; }
+function cacheKey(id, range, end) {
+  // 平移/缩放的窗口各自缓存，来回拖动不用反复请求
+  return id + ':' + range + ':' + (end == null ? 'now' : Math.round(end));
+}
 
-function cacheGet(id, range) {
-  const key = cacheKey(id, range);
+function cacheGet(id, range, end) {
+  const key = cacheKey(id, range, end);
   const hit = _detailCache.get(key);
   if (hit && Date.now() - hit.ts < DETAIL_CACHE_MS) return hit.data;
   try {
@@ -589,11 +499,12 @@ function cacheGet(id, range) {
   return null;
 }
 
-function cachePut(id, range, data) {
+function cachePut(id, range, end, data) {
   const entry = { data, ts: Date.now() };
-  _detailCache.set(cacheKey(id, range), entry);
+  const key = cacheKey(id, range, end);
+  _detailCache.set(key, entry);
   try {
-    sessionStorage.setItem('probe-detail:' + cacheKey(id, range), JSON.stringify(entry));
+    sessionStorage.setItem('probe-detail:' + key, JSON.stringify(entry));
   } catch (_) { /* 超配额/隐私模式：内存缓存仍然有效 */ }
 }
 
@@ -617,10 +528,9 @@ function openDetail(id) {
     _detailId = id;
     _detailData = null;
     _detailShownKey = null;
-    _detailPage = 0;
-    _detailRows = [];
+    _detailEnd = null;
     ['#detail-head', '#detail-spec', '#detail-bars', '#detail-net-stats', '#detail-ping-row',
-     '#detail-events', '#detail-table', '#detail-pager', '#detail-ifaces'].forEach(sel => {
+     '#detail-events', '#detail-ifaces'].forEach(sel => {
       const el = $(sel);
       if (el) { el.innerHTML = ''; el.hidden = false; }
     });
@@ -656,18 +566,23 @@ function stopDetailPolling() {
 }
 
 async function loadDetail() {
-  const id = _detailId, range = _detailRange;
+  const id = _detailId, range = _detailRange, end = _detailEnd;
   if (!id) return;
-  // 先用缓存顶一下（切区间/重开该节点时几乎瞬开），随后仍会拉最新数据
-  const key = cacheKey(id, range);
+  // 先用缓存顶一下（切区间/拖时间轴/重开该节点时几乎瞬开），随后仍会拉最新数据
+  const key = cacheKey(id, range, end);
   if (_detailShownKey !== key) {
-    const cached = cacheGet(id, range);
+    const cached = cacheGet(id, range, end);
     if (cached) { _detailShownKey = key; _detailData = cached; renderDetail(cached); }
   }
   try {
-    const data = await api(`/api/nodes/${encodeURIComponent(id)}?range=${range}`);
-    if (_detailId !== id || _detailRange !== range) return;   // 期间已切走，别用旧响应覆盖
-    cachePut(id, range, data);
+    const q = `range=${range}` + (end == null ? '' : `&end=${Math.round(end)}`);
+    const data = await api(`/api/nodes/${encodeURIComponent(id)}?${q}`);
+    // 期间已切走/换了窗口，别用旧响应覆盖
+    if (_detailId !== id || _detailRange !== range || _detailEnd !== end) return;
+    cachePut(id, range, end, data);
+    if (isFinite(Number(data.oldest))) {
+      _detailExtent = { oldest: Number(data.oldest), newest: Number(data.newest) };
+    }
     _detailShownKey = key;
     _detailData = data;
     renderDetail(data);
@@ -682,6 +597,34 @@ async function loadDetail() {
   }
 }
 
+/* 缩放/平移后统一走这里：只改窗口，不重复写渲染逻辑。
+   end 传数值 = 钉住这个历史窗口；传 null = 贴着现在，跟着新数据往前走。 */
+function setWindow(range, end) {
+  _detailRange = Math.round(range);
+  _detailEnd = end;
+  syncRangeButtons();
+  if (_detailId) loadDetail();
+}
+
+function applyWindow(next) {
+  if (!next) return;
+  setWindow(next.range, next.end);
+}
+
+/* 服务端给的数据边界。还没拿到响应时用"最近 24 小时"兜底，
+   否则 clampWindow 会把窗口夹成 1 秒这种废值。 */
+function detailExtent() {
+  const ext = _detailExtent;
+  if (ext && ext.newest > ext.oldest) return ext;
+  const now = Math.floor(Date.now() / 1000);
+  return { oldest: now - PING_MAX_RANGE, newest: now };
+}
+
+function currentWindow() {
+  const ext = detailExtent();
+  return clampWindow(_detailRange, _detailEnd, ext.oldest, ext.newest);
+}
+
 function renderDetail(data) {
   const n = data.node || {};
   renderDetailHead(n);
@@ -691,7 +634,6 @@ function renderDetail(data) {
   renderDetailIfaces(n);
   renderDetailPing(data.ping_history || [], n);
   renderDetailEvents(data.events || []);
-  renderDetailTable(data);
 }
 
 function renderDetailHead(n) {
@@ -705,7 +647,6 @@ function renderDetailHead(n) {
   loc.innerHTML = countryFlag(n.country);      // 只插入正则校验过的国家码
   const fields = [
     ['状态', n.online ? '在线' : '离线', 'status ' + (n.online ? 'on' : 'off')],
-    ['IP', n.ip || '—', ''],
     ['主机名', n.hostname || '—', ''],
     ['最后上报', n.updated ? ago(n.updated) + '（' + clock(n.updated) + '）' : '—', ''],
     ['运行时长', n.uptime ? duration(n.uptime) : '—', ''],
@@ -851,16 +792,28 @@ function renderDetailNet(n, samples) {
 
 function renderDetailPing(samples, n) {
   const win = pingWindow({ ping_history: samples, updated: n.updated }, _detailRange);
-  pingChart(document.querySelector('#node-detail .ping-svg'), win, 96);
-  lossChart(document.querySelector('#node-detail .loss-svg'), win, 20);
-  const lv = document.querySelector('#node-detail .loss-val');
-  if (lv) {
+  const svg = document.querySelector('#node-detail .ping-svg');
+  if (svg) {
+    latencyBars(svg, win, 118);
+    // 框选放大的叠加层；柱子每次重画都要补回来
+    const pick = document.createElementNS
+      ? document.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      : document.createElement('rect');
+    pick.setAttribute('class', 'pick');
+    pick.setAttribute('y', '0');
+    pick.setAttribute('height', '118');
+    pick.setAttribute('visibility', 'hidden');
+    svg.append(pick);
+  }
+  const winLabel = $('#ping-window');
+  if (winLabel) {
     const st = lossStats(win);
-    lv.textContent = st.total ? st.pct.toFixed(st.pct < 10 ? 1 : 0) + '%' : '—';
-    lv.className = 'loss-val ' + (st.pct === 0 ? 'ok' : st.pct < 5 ? 'warn' : 'bad');
+    const pct = st.total ? (st.pct < 10 ? st.pct.toFixed(1) : st.pct.toFixed(0)) + '%' : '—';
+    winLabel.textContent = `${win.length} 个采样点 · 丢包率 ${pct}`;
   }
   // 三网当前延迟徽章
   const prow = $('#detail-ping-row');
+  if (!prow) return;
   prow.innerHTML = '';
   const icons = { ct: '电信', cu: '联通', cm: '移动' };
   ['ct', 'cu', 'cm'].forEach(k => {
@@ -885,7 +838,7 @@ function renderDetailPing(samples, n) {
     const em = document.createElement('em');
     em.className = 'loss loss-' + (pct === 0 ? 'ok' : pct < 5 ? 'warn' : 'bad');
     em.textContent = icons[k] + ' ' + pct + '%';
-    $('#detail-ping-row').append(em);
+    prow.append(em);
   });
 }
 
@@ -957,123 +910,122 @@ function renderDetailIfaces(n) {
   box.append(table);
 }
 
-/* ---------- 采样明细（时间倒序 + 分页） ---------- */
-function buildRows(data) {
-  // 负载和延迟来自同一次上报，时间戳一致；按时间合并成一张表
-  const byTime = new Map();
-  (data.history || []).forEach(s => {
-    byTime.set(s.time, { time: s.time, cpu: s.cpu, memory: s.memory, disk: s.disk,
-                         rx: s.rx, tx: s.tx, load1: s.load1 });
-  });
-  (data.ping_history || []).forEach(s => {
-    const row = byTime.get(s.time) || { time: s.time };
-    row.ct = s.ct; row.cu = s.cu; row.cm = s.cm;
-    byTime.set(s.time, row);
-  });
-  return [...byTime.values()].sort((a, b) => (b.time || 0) - (a.time || 0));
-}
+/* ---------- 详情页：延迟/丢包柱状图 + 时间轴缩放 ---------- */
+/* 每个采样点画 3 根柱子（电信/联通/移动），柱高 = 延迟；超时画成整高红柱，
+   所以丢包是"看得见的一根红柱"，不需要再单独一条丢包带。 */
+const CARRIERS = [['ct', '电信', '#2979FF'], ['cu', '联通', '#E64A19'], ['cm', '移动', '#00C853']];
+// 一屏最多画多少个"时间桶"。每个桶 3 根柱子，桶太多柱子会细到看不见。
+const BAR_MAX_BUCKETS = 120;
 
-const fmtMs = v => {
-  const n = Number(v) || 0;
-  return n < 0 ? '超时' : n > 0 ? n + 'ms' : '—';
-};
-
-function renderDetailTable(data) {
-  _detailRows = buildRows(data);
-  const hint = $('#detail-table-hint');
-  if (hint) hint.textContent = `${_detailRows.length} 个采样点 · ${PING_RANGE_LABELS[_detailRange] || ''}`;
-  renderDetailPage();
-}
-
-function renderDetailPage() {
-  const box = $('#detail-table'), pager = $('#detail-pager');
-  if (!box || !pager) return;
-  box.innerHTML = '';
-  pager.innerHTML = '';
-  if (!_detailRows.length) {
-    const p = document.createElement('p');
-    p.className = 'hint';
-    p.textContent = '当前区间没有采样数据。';
-    box.append(p);
-    return;
+/* 采样点太密时按时间顺序分桶：延迟取均值，桶内只要有一次超时就整桶标记为超时
+   （宁可把问题显出来，也不要因为平均掉而看不见）。 */
+function bucketSamples(samples, maxBuckets = BAR_MAX_BUCKETS) {
+  if (samples.length <= maxBuckets) return samples;
+  const size = Math.ceil(samples.length / maxBuckets);
+  const out = [];
+  for (let i = 0; i < samples.length; i += size) {
+    const chunk = samples.slice(i, i + size);
+    const agg = { time: chunk[chunk.length >> 1].time };
+    CARRIERS.forEach(([key]) => {
+      let sum = 0, n = 0, lost = 0, seen = 0;
+      chunk.forEach(s => {
+        const v = Number(s[key]) || 0;
+        if (v < 0) { lost++; seen++; } else if (v > 0) { sum += v; n++; seen++; }
+      });
+      agg[key] = seen === 0 ? 0 : (lost ? -1 : sum / n);
+    });
+    out.push(agg);
   }
-  const pages = Math.ceil(_detailRows.length / DETAIL_TABLE_PAGE);
-  _detailPage = Math.min(Math.max(_detailPage, 0), pages - 1);
-  const slice = _detailRows.slice(_detailPage * DETAIL_TABLE_PAGE,
-                                  (_detailPage + 1) * DETAIL_TABLE_PAGE);
+  return out;
+}
 
-  const table = document.createElement('table');
-  table.className = 'mini-table data-table';
-  const head = document.createElement('tr');
-  ['时间', 'CPU', '内存', '磁盘', '下载', '上传', '负载', '电信', '联通', '移动']
-    .forEach(h => {
-      const th = document.createElement('th');
-      th.textContent = h;
-      head.append(th);
-    });
-  table.append(head);
-  slice.forEach(r => {
-    const tr = document.createElement('tr');
-    const cells = [
-      clock(r.time),
-      r.cpu == null ? '—' : Math.round(r.cpu) + '%',
-      r.memory == null ? '—' : Math.round(r.memory) + '%',
-      r.disk == null ? '—' : Math.round(r.disk) + '%',
-      r.rx == null ? '—' : mbpsNum(r.rx),
-      r.tx == null ? '—' : mbpsNum(r.tx),
-      r.load1 == null ? '—' : Number(r.load1).toFixed(2),
-      fmtMs(r.ct), fmtMs(r.cu), fmtMs(r.cm),
-    ];
-    cells.forEach((v, i) => {
-      const td = document.createElement('td');
-      td.textContent = v;
-      if (i >= 7 && v === '超时') td.className = 'bad';
-      tr.append(td);
-    });
-    table.append(tr);
+function latencyBars(svg, samples, height = 118) {
+  const w = 600, h = height, pad = 4;
+  svg.innerHTML = '';
+  if (!samples.length) return;
+  samples = bucketSamples(samples);
+  const xs = xPositions(samples, w);
+  const n = samples.length;
+  const step = n > 1 ? Math.abs(xs[1] - xs[0]) : w;
+  const groupW = Math.max(1.5, step * 0.88);
+  const barW = Math.max(0.7, groupW / 3);
+  // 纵轴上限取窗口内的峰值，但至少 50ms，免得全是 1ms 时柱子顶到天
+  const vals = samples.flatMap(s => CARRIERS.map(([k]) => Number(s[k]) || 0)).filter(v => v > 0);
+  const peak = Math.max(50, ...vals);
+  const py = v => h - pad - Math.min(Math.max(Number(v) || 0, 0), peak) / peak * (h - pad * 2);
+  const base = h - pad;
+
+  let html = '';
+  [1, 0.5].forEach(f => {
+    html += `<line x1="0" y1="${py(peak * f).toFixed(1)}" x2="${w}" y2="${py(peak * f).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3"/>`;
   });
-  box.append(table);
+  html += `<line x1="0" y1="${base}" x2="${w}" y2="${base}" stroke="var(--line)"/>`;
 
-  const prev = document.createElement('button');
-  prev.textContent = '上一页';
-  prev.disabled = _detailPage === 0;
-  prev.onclick = () => { _detailPage--; renderDetailPage(); };
-  const info = document.createElement('span');
-  info.textContent = `第 ${_detailPage + 1} / ${pages} 页`;
-  const next = document.createElement('button');
-  next.textContent = '下一页';
-  next.disabled = _detailPage >= pages - 1;
-  next.onclick = () => { _detailPage++; renderDetailPage(); };
-  pager.append(prev, info, next);
-}
-
-/* ---------- 导出 CSV ---------- */
-function detailCsv(data) {
-  const cols = ['time', 'cpu', 'memory', 'disk', 'rx_bps', 'tx_bps', 'load1',
-                'mem_cached', 'swap_used', 'ping_ct_ms', 'ping_cu_ms', 'ping_cm_ms'];
-  // 时间戳转成本地可读时间，方便直接丢进表格软件
-  const cell = v => v == null || v === '' ? '' : String(v);
-  const lines = [cols.join(',')];
-  buildRows(data).sort((a, b) => (a.time || 0) - (b.time || 0)).forEach(r => {
-    lines.push([new Date((Number(r.time) || 0) * 1000).toISOString(),
-                cell(r.cpu), cell(r.memory), cell(r.disk), cell(r.rx), cell(r.tx),
-                cell(r.load1), cell(r.mem_cached), cell(r.swap_used),
-                cell(r.ct), cell(r.cu), cell(r.cm)].join(','));
+  samples.forEach((s, i) => {
+    const gx = xs[i] - groupW / 2;
+    CARRIERS.forEach(([key, , color], ci) => {
+      const v = Number(s[key]) || 0;
+      if (v === 0) return;                       // 该运营商未配置目标
+      const x = Math.min(Math.max(gx + ci * barW, 0), w - barW);
+      if (v < 0) {                               // 超时：整高，红色
+        html += `<rect class="lbar lbar-timeout" x="${x.toFixed(1)}" y="${pad}" ` +
+                `width="${barW.toFixed(1)}" height="${(base - pad).toFixed(1)}"/>`;
+      } else {
+        const y = py(v);
+        html += `<rect class="lbar" x="${x.toFixed(1)}" y="${y.toFixed(1)}" ` +
+                `width="${barW.toFixed(1)}" height="${Math.max(0.8, base - y).toFixed(1)}" fill="${color}"/>`;
+      }
+    });
   });
-  return lines.join('\n');
+  svg.innerHTML = html;
+
+  const axis = svg.parentElement.querySelector('.y-axis');
+  if (axis) {
+    const sp = axis.querySelectorAll('span');
+    if (sp[0]) sp[0].textContent = Math.round(peak) + 'ms';
+    if (sp[1]) sp[1].textContent = Math.round(peak / 2) + 'ms';
+    if (sp[2]) sp[2].textContent = '0';
+  }
 }
 
-function downloadCsv(name, text) {
-  const blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(url);
+// 画框选区域（拖拽时显示），用叠加层而不是重画柱子
+function drawSelection(svg, x0, x1) {
+  const rect = svg.querySelector('.pick');
+  if (!rect) return;
+  rect.setAttribute('x', Math.min(x0, x1).toFixed(1));
+  rect.setAttribute('width', Math.abs(x1 - x0).toFixed(1));
+  rect.setAttribute('visibility', Math.abs(x1 - x0) < 2 ? 'hidden' : 'visible');
 }
 
-/* 路由：只有 #/node/<id> 一种，其余一律回列表 */function route() {
+/* ---------- 时间窗口计算（纯函数，便于单测） ---------- */
+const PING_MIN_RANGE = 300;
+const PING_MAX_RANGE = 86400;
+
+function clampWindow(range, end, oldest, newest) {
+  const span = Math.max(1, newest - oldest);
+  const r = Math.min(Math.max(range, PING_MIN_RANGE), Math.min(PING_MAX_RANGE, span));
+  let e = (end == null || !isFinite(end)) ? newest : end;
+  e = Math.min(Math.max(e, oldest + r), newest);
+  if (oldest + r > newest) e = newest;      // 数据比窗口还短，贴着最新
+  return { range: r, end: e };
+}
+
+/* factor < 1 放大，> 1 缩小；focus 是缩放中心的时间戳 */
+function zoomWindow(range, end, factor, focus, oldest, newest) {
+  const { range: r0, end: e0 } = clampWindow(range, end, oldest, newest);
+  const since = e0 - r0;
+  const ratio = Math.min(Math.max((focus - since) / r0, 0), 1);
+  const r = r0 * factor;
+  return clampWindow(r, focus + (1 - ratio) * r, oldest, newest);
+}
+
+function panWindow(range, end, deltaT, oldest, newest) {
+  const { range: r0, end: e0 } = clampWindow(range, end, oldest, newest);
+  return clampWindow(r0, e0 + deltaT, oldest, newest);
+}
+
+/* ---------- 路由：只有 #/node/<id> 一种，其余一律回列表 ---------- */
+function route() {
   const m = /^#\/node\/([0-9a-fA-F]{6,64})$/.exec(location.hash || '');
   if (m) openDetail(m[1]);
   else closeDetail();
@@ -1081,13 +1033,6 @@ function downloadCsv(name, text) {
 window.addEventListener('hashchange', route);
 
 $('#detail-back').onclick = () => { location.hash = ''; };
-
-$('#detail-csv').onclick = () => {
-  if (!_detailData) return;
-  const n = _detailData.node || {};
-  const id = (_detailId || 'node').slice(0, 8);
-  downloadCsv(`probe-${id}-${_detailRange}s.csv`, detailCsv(_detailData));
-};
 
 $('#detail-share').onclick = async () => {
   const btn = $('#detail-share');
@@ -1107,16 +1052,89 @@ $('#detail-share').onclick = async () => {
   setTimeout(() => { btn.textContent = '分享'; }, 2000);
 };
 
+/* ---------- 时间轴：预设区间 / 缩放 / 平移 / 框选 ---------- */
+function syncRangeButtons() {
+  document.querySelectorAll('#detail-range button').forEach(x => {
+    x.classList.toggle('active', Number(x.dataset.range) === _detailRange && _detailEnd == null);
+  });
+}
+
 document.querySelectorAll('#detail-range button').forEach(btn => {
   btn.onclick = () => {
     const range = Number(btn.dataset.range) || DETAIL_DEFAULT_RANGE;
-    if (range === _detailRange) return;
-    _detailRange = range;
-    document.querySelectorAll('#detail-range button')
-      .forEach(x => x.classList.toggle('active', x === btn));
-    if (_detailId) loadDetail();
+    if (range === _detailRange && _detailEnd == null) return;
+    setWindow(range, null);            // 预设按钮 = 贴着现在，跟着新数据走
   };
 });
+
+/* 缩放：factor < 1 放大。有 focus（0~1 的横向比例）就以该点为中心。 */
+function zoomBy(factor, focusRatio) {
+  const cur = currentWindow();
+  const focus = focusRatio == null ? cur.end - cur.range / 2
+                                   : cur.end - cur.range * (1 - focusRatio);
+  applyWindow(zoomWindow(cur.range, cur.end, factor, focus,
+                         detailExtent().oldest, detailExtent().newest));
+}
+
+function shiftBy(fraction) {
+  const cur = currentWindow();
+  applyWindow(panWindow(cur.range, cur.end, cur.range * fraction,
+                        detailExtent().oldest, detailExtent().newest));
+}
+
+const onId = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+onId('#ping-in', () => zoomBy(0.5, 0.5));
+onId('#ping-out', () => zoomBy(2, 0.5));
+onId('#ping-left', () => shiftBy(-0.5));
+onId('#ping-right', () => shiftBy(0.5));
+onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
+
+/* 在图上拖拽 = 框选一段时间并放大 */
+(function wireDragSelect() {
+  const svg = document.querySelector('#node-detail .ping-svg');
+  if (!svg) return;
+  let startX = null;
+  const svgX = ev => {
+    const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    if (!rect || !rect.width) return null;
+    return (ev.clientX - rect.left) / rect.width * 600;
+  };
+  svg.addEventListener('mousedown', ev => {
+    const x = svgX(ev);
+    if (x == null) return;
+    startX = x;
+    drawSelection(svg, x, x);
+  });
+  svg.addEventListener('mousemove', ev => {
+    if (startX == null) return;
+    const x = svgX(ev);
+    if (x != null) drawSelection(svg, startX, x);
+  });
+  const finish = ev => {
+    if (startX == null) return;
+    const endX = svgX(ev);
+    const from = startX;
+    startX = null;
+    drawSelection(svg, 0, 0);
+    if (endX == null || Math.abs(endX - from) < 8) return;   // 太窄当误触
+    const cur = currentWindow();
+    const since = cur.end - cur.range;
+    const t0 = since + Math.min(from, endX) / 600 * cur.range;
+    const t1 = since + Math.max(from, endX) / 600 * cur.range;
+    applyWindow(clampWindow(t1 - t0, t1, detailExtent().oldest, detailExtent().newest));
+  };
+  svg.addEventListener('mouseup', finish);
+  svg.addEventListener('mouseleave', ev => {
+    if (startX != null) finish(ev);
+  });
+  // 滚轮缩放：必须按住 Ctrl/⌘，否则会和页面滚动打架
+  svg.addEventListener('wheel', ev => {
+    if (!ev.ctrlKey && !ev.metaKey) return;
+    ev.preventDefault();
+    const x = svgX(ev);
+    zoomBy(ev.deltaY > 0 ? 2 : 0.5, x == null ? 0.5 : x / 600);
+  }, { passive: false });
+})();
 
 /* ---------- 管理后台 ---------- */
 $('#login-btn').onclick = async () => {

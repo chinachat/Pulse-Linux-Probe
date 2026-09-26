@@ -66,10 +66,11 @@ REPORT_STRINGS = (("hostname", 100, "unknown"), ("name", 60, ""), ("os", 120, ""
 HISTORY_SAMPLE_FIELDS = (("network_rx", "rx"), ("network_tx", "tx"), ("cpu", "cpu"),
                          ("memory", "memory"), ("disk", "disk"), ("load1", "load1"),
                          ("mem_cached", "mem_cached"), ("swap_used", "swap_used"))
-# 详情接口：一次最多下发多少个点、可查询的最大时间窗
+# 详情接口：一次最多下发多少个点、可查询的时间窗范围
 DETAIL_POINTS = 300
 DETAIL_KEEP_RECENT = 60
-DETAIL_MAX_RANGE = 86400
+DETAIL_MIN_RANGE = 300      # 最小 5 分钟窗口（时间轴缩放下限）
+DETAIL_MAX_RANGE = 86400    # 最大 24 小时
 NODE_ID_RE = re.compile(r"^[0-9a-f]{6,64}$")
 # 事件派生阈值（可在后台改，存在 DATA["settings"]["thresholds"]）。
 # (键, 默认值, 最小, 最大, 单位/说明)
@@ -304,13 +305,6 @@ def key_matches(candidate, keys):
         matched |= hmac.compare_digest(str(k.get("key", "")), str(candidate))
     return matched
 
-def mask_ip(ip):
-    if not ip: return "hidden"
-    ip = ip[:45]
-    if ":" in ip: return ":".join(ip.split(":")[:2]) + "::****"
-    pieces = ip.split(".")
-    return ".".join(pieces[:2]) + ".*.*" if len(pieces) == 4 else "hidden"
-
 def clamp_num(value, lo, hi):
     """把上报值强制成 [lo, hi] 内的有限浮点数，非法输入归零。"""
     try:
@@ -396,12 +390,13 @@ def downsample_even(series, limit):
         return series
     return [series[int(i * n / limit)] for i in range(limit)]
 
-def trim_window(series, since):
-    """取时间窗内的样本；窗口内一个都没有时至少回退到最后一个点，
+def trim_window(series, since, until=None):
+    """取 [since, until) 内的样本；窗口内一个都没有时至少回退到窗口前的最后一个点，
     免得刚改区间就白屏。"""
     if not series:
         return []
-    win = [s for s in series if (s.get("time") or 0) >= since]
+    win = [s for s in series
+           if (s.get("time") or 0) >= since and (until is None or (s.get("time") or 0) <= until)]
     return win if win else series[-1:]
 
 def _sustained_events(samples, key, threshold, kind, label, events):
@@ -574,26 +569,42 @@ class App(SimpleHTTPRequestHandler):
             window = int(query.get("range", ["3600"])[0])
         except (TypeError, ValueError):
             window = 3600
-        window = min(max(window, 300), DETAIL_MAX_RANGE)
+        window = min(max(window, DETAIL_MIN_RANGE), DETAIL_MAX_RANGE)
+        # end = 窗口右端（unix 秒）。不传就是"贴着现在"，传了就能把时间轴往回拖。
+        now = time.time()
+        try:
+            end = float(query.get("end", ["0"])[0]) or now
+        except (TypeError, ValueError):
+            end = now
+        if end != end or end in (float("inf"), float("-inf")):   # NaN / ±inf
+            end = now
+        end = min(max(end, 0.0), now)                 # 不能看未来
         with LOCK:
             node = DATA["nodes"].get(node_id)
             if node is None:
                 return self.send_json({"error": "node not found"}, 404)
             node = dict(node)
-        now = time.time()
-        since = now - window
+        since = end - window
         # 事件必须用**原始 1 分钟粒度**序列派生，"连续 N 分钟"才算得准；
         # 下发时再降采样。两者不要混，否则抽样后每个点代表好几分钟，措辞就错了。
-        raw_load = trim_window(node.get("history", []), since)
-        raw_ping = trim_window(node.get("ping_history", []), since)
-        detail = {k: v for k, v in node.items() if k not in ("history", "ping_history")}
-        detail["ip"] = mask_ip(node.get("ip"))
+        full_load = node.get("history", [])
+        full_ping = node.get("ping_history", [])
+        raw_load = trim_window(full_load, since, end)
+        raw_ping = trim_window(full_ping, since, end)
+        # 最早/最新样本，前端据此限制平移范围
+        stamps = [s.get("time", 0) for s in full_load] + [s.get("time", 0) for s in full_ping]
+        oldest = min(stamps) if stamps else 0
+        newest = max(stamps) if stamps else end
+        detail = {k: v for k, v in node.items() if k not in ("history", "ping_history", "ip")}
         detail["online"] = now - node.get("updated", 0) < OFFLINE_SECONDS
         with LOCK:
             thresholds = clean_thresholds(DATA["settings"].get("thresholds"))
         return self.send_json({
             "node": detail,
             "range": window,
+            "end": end,
+            "oldest": oldest,
+            "newest": newest,
             "thresholds": thresholds,
             "history": downsample_even(raw_load, DETAIL_POINTS),
             "ping_history": compact_ping_history(raw_ping, DETAIL_POINTS, DETAIL_KEEP_RECENT),
@@ -612,7 +623,9 @@ class App(SimpleHTTPRequestHandler):
             nodes = []
             for node in snapshot:
                 n = dict(node)
-                n["ip"] = mask_ip(n.get("ip"))
+                # 不对外下发 ip：服务端看到的对端地址不等于节点公网 IP（反代/NAT/多出口下
+                # 都是错的），显示出去只会误导。原始值仍留在记录里，后台接口可见。
+                n.pop("ip", None)
                 n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
                 # 只下发图表够用的点数：全量 1440 点 × 200 节点会把响应撑到十几 MB，
                 # 而图表宽度只有几百像素。

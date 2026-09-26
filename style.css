@@ -402,24 +402,31 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .y-axis { display: flex; flex-direction: column; justify-content: space-between; width: 30px; flex-shrink: 0; padding: 2px 4px 4px 0; }
 .y-axis span { font: 8px var(--font-mono); color: var(--muted); text-align: right; line-height: 1; }
 
-/* ---------- 丢包图（与延迟图共用时间轴） ---------- */
-.loss-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  padding-left: 30px;   /* 与上方延迟图的数据区左边界对齐（跳过 y 轴宽度） */
+/* ---------- 延迟/丢包柱状图 + 时间轴缩放 ---------- */
+.lbar { shape-rendering: crispEdges; }
+.lbar-timeout { fill: #ef4444; opacity: .5; }
+.pick { fill: var(--accent, #10b981); opacity: .16; pointer-events: none; }
+.ping-legend { display: inline-flex; align-items: center; gap: 10px; }
+.ping-legend .lg {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 3px;
+  vertical-align: middle;
 }
-.loss-tag { color: var(--muted); font: 10px var(--font-mono); flex-shrink: 0; }
-.loss-svg { display: block; flex: 1; min-width: 0; height: 18px; }
-.loss-val { font: 600 10px var(--font-mono); flex-shrink: 0; min-width: 34px; text-align: right; color: var(--muted); }
-.loss-val.ok { color: var(--muted); }
-.loss-val.warn { color: #f59e0b; }
-.loss-val.bad { color: #ef4444; }
-.loss-bar.none { fill: var(--line); }
-.loss-bar.low { fill: #10b981; opacity: .75; }
-.loss-bar.warn { fill: #f59e0b; }
-.loss-bar.bad { fill: #ef4444; }
+.ping-legend .lg-ct { background: var(--ping-ct); }
+.ping-legend .lg-cu { background: var(--ping-cu); }
+.ping-legend .lg-cm { background: var(--ping-cm); }
+.ping-legend .lg-timeout { background: #ef4444; opacity: .55; }
+.zoom-tools { display: inline-flex; gap: 4px; }
+.zoom-tools button {
+  padding: 3px 9px;
+  font-size: 12px;
+  line-height: 1.2;
+  border-radius: var(--radius-xs);
+  min-width: 28px;
+}
 
 /* 卡片底部 */
 .card-foot {
@@ -469,7 +476,7 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .chart-block { margin-top: 14px; }
 .load-svg, .mem-svg { display: block; width: 100%; height: 96px; }
 .mem-svg { height: 80px; }
-#node-detail .ping-svg { height: 96px; }
+#node-detail .ping-svg { height: 118px; }
 #node-detail .detail-net { height: 120px; }
 #node-detail .hint a { color: var(--accent, #10b981); }
 

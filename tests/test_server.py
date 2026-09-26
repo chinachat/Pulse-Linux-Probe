@@ -196,7 +196,8 @@ class ServerTest(unittest.TestCase):
         nodes = json.loads(raw)["nodes"]
         self.assertEqual(len(nodes), 1)
         node = nodes[0]
-        self.assertEqual(node["ip"], "127.0.*.*")  # masked
+        # 公网列表不下发 ip：对端地址在多出口/NAT/反代下都不能代表节点公网 IP
+        self.assertNotIn("ip", node)
         self.assertTrue(node["online"])
         self.assertEqual(node["country"], "CN")  # upper-cased
         self.assertEqual(len(node["history"]), 1)
@@ -245,8 +246,9 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
     def test_13_x_forwarded_for(self):
-        # PROBE_TRUST_PROXY=1 is set in setUpClass: the node IP must come
-        # from the first X-Forwarded-For entry, not the TCP peer.
+        # PROBE_TRUST_PROXY=1 is set in setUpClass: the recorded peer address must
+        # come from the first X-Forwarded-For entry, not the TCP peer.
+        # 公网接口不再下发 ip（对端地址≠节点公网 IP），所以改从后台接口验证。
         status, _, raw = http(self.base, "POST", "/api/admin/keys",
                               {"label": "xff"},
                               {"Cookie": self.cookie, "X-CSRF-Token": self.csrf})
@@ -256,9 +258,14 @@ class ServerTest(unittest.TestCase):
         status, _, _ = http(self.base, "POST", "/api/report", payload,
                             {"X-API-Key": key, "X-Forwarded-For": "203.0.113.7, 10.0.0.1"})
         self.assertEqual(status, 200)
-        _, _, raw = http(self.base, "GET", "/api/nodes")
+        _, _, raw = http(self.base, "GET", "/api/admin/nodes",
+                         headers={"Cookie": self.cookie})
         node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
-        self.assertEqual(node["ip"], "203.0.*.*")
+        self.assertEqual(node["ip"], "203.0.113.7")     # 取 XFF 第一段，不带掩码
+        # 公网接口无论如何都不该带 ip
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        pub = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
+        self.assertNotIn("ip", pub)
 
     def test_14_block_and_unblock(self):
         status, _, raw = http(self.base, "POST", "/api/admin/keys",
@@ -431,9 +438,14 @@ class RegressionTest(unittest.TestCase):
         status, _, _ = http(self.base, "POST", "/api/report", payload,
                             {"X-API-Key": key, "X-Forwarded-For": "203.0.113.7"})
         self.assertEqual(status, 200)
+        # 公网接口不带 ip，改从后台接口查真实记录的对端地址
         _, _, raw = http(self.base, "GET", "/api/nodes")
+        pub = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
+        self.assertNotIn("ip", pub, "公网接口不应下发 ip")
+        _, _, raw = http(self.base, "GET", "/api/admin/nodes", headers=self.admin)
         node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
-        self.assertEqual(node["ip"], "127.0.*.*")  # TCP 对端，而不是伪造的头
+        self.assertEqual(node["ip"], "127.0.0.1")  # TCP 对端；伪造的 XFF 必须被忽略
+        self.assertEqual(node["hostname"], "xff-node")
 
     def test_04_report_fields_are_whitelisted_and_clamped(self):
         key = make_key(self.base, self.admin, "clean")["key"]
@@ -531,8 +543,8 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(node["procs"], 234)
         self.assertEqual(node["iowait"], 3)
         self.assertTrue(node["cpu_model"].startswith("Intel(R) Xeon(R)"))
-        # IP 仍然脱敏
-        self.assertEqual(node["ip"], "127.0.*.*")
+        # 详情接口同样不下发 ip
+        self.assertNotIn("ip", node)
         # 完整样本
         sample = body["history"][0]
         for key_name in ("time", "rx", "tx", "cpu", "memory", "disk", "load1",
@@ -631,6 +643,43 @@ class RegressionTest(unittest.TestCase):
              {"thresholds": {"cpu": 90, "memory": 90, "disk": 90, "iowait": 60,
                              "loss": 50, "ping_ms": 500}}, self.admin)
 
+    def test_15_detail_window_can_be_panned_with_end(self):
+        # 时间轴缩放/平移：end 决定窗口右端，不传就是贴着现在
+        key = make_key(self.base, self.admin, "pan")["key"]
+        for i in range(30):
+            http(self.base, "POST", "/api/report",
+                 {"hostname": "pan-node", "cpu": i, "memory": 10, "disk": 10},
+                 {"X-API-Key": key})
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "pan-node", "cpu": 1}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        body = json.loads(raw)
+        self.assertIn("end", body)
+        self.assertIn("oldest", body)
+        self.assertIn("newest", body)
+        self.assertLessEqual(body["end"], time.time() + 1)
+        self.assertLessEqual(body["oldest"], body["newest"])
+
+        # 把 end 挪到过去：窗口右端必须跟着走
+        past = body["newest"] - 600
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600&end={past}")
+        moved = json.loads(raw)
+        self.assertAlmostEqual(moved["end"], past, delta=2)
+        # 这些上报都挤在几秒内，往回挪 10 分钟后窗口内其实没有样本；
+        # trim_window 会回退到最后一个点（避免白屏），所以这里只断言非空。
+        # 真正的窗口裁剪在端到端脚本里用 24 小时数据验证。
+        self.assertGreaterEqual(len(moved["history"]), 1)
+
+        # end 不能超过现在，也不能是垃圾值
+        for bad, desc in ((time.time() + 99999, "未来"), ("abc", "非数值"), ("", "空")):
+            _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600&end={bad}")
+            self.assertLessEqual(json.loads(raw)["end"], time.time() + 1, desc)
+
+        # range 下限 300 秒（时间轴放大到 5 分钟为止）
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=10")
+        self.assertEqual(json.loads(raw)["range"], 300)
     def test_14_ifaces_are_whitelisted_and_capped(self):
         key = make_key(self.base, self.admin, "if")["key"]
         payload = {"hostname": "if-node", "cpu": 1,

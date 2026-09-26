@@ -3,7 +3,7 @@
 **English | [简体中文](README.zh-CN.md)**
 
 Multi-node Linux monitoring dashboard: a dependency-free Python 3 server, a
-one-line Bash agent installer, and a live web dashboard with masked IPs,
+one-line Bash agent installer, and a live web dashboard with country flags,
 country flags, hardware specs, bar charts, network-rate indicators, and
 real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 
@@ -14,10 +14,10 @@ real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 - **Hardware specs** — CPU cores, total memory, total disk capacity, cumulative traffic per node
 - **Network metrics** — real-time throughput (Mbps) + total upload/download (MB/GB/TB), plus a live canvas rate chart on every node card
 - **TCP ping** — CT (电信) / CU (联通) / CM (移动) latency badges with color coding (green ≤100ms / yellow ≤300ms / red >300ms) and packet-loss rate
-- **Ping history chart** — SVG area-gradient chart for CT/CU/CM latency **plus a packet-loss strip** sharing the same time axis; the whole dashboard switches between **1 h / 6 h / 12 h / 24 h** in one click, and the server keeps a full **24 h at 1-minute resolution**
+- **Ping history chart** — **CT/CU/CM latency + packet loss as one bar chart** (one bar per carrier per time bucket; a timeout is drawn as a full-height red bar). **Zoom the time axis** by dragging a region on the chart, `Ctrl`/`⌘` + wheel, or the `−`/`+` buttons; pan with `←`/`→`; `最新` snaps back to live. The server keeps a full **24 h at 1-minute resolution**
 - **OS detection** — distro icon tinted with the same color as the label via CSS mask + `currentColor` (crisp in both themes)
 - **Region filter** — a tab bar above the grid groups nodes by country (flag + count); picking a region shows only that region's cards
-- **Node detail page** — click any card (or open `#/node/<id>` directly) for a full-page view: CPU model / cores / MHz / L3 cache, distro + version + codename, kernel, process / thread counts, virtualization, swap and buff-cache, load average, plus **1 h / 6 h / 12 h / 24 h** charts for load (CPU/memory/disk), memory composition (used + buff-cache), network rate and latency + packet loss. Also an **event log** derived on read (threshold breaches, offline gaps, ping timeout / loss / slow), a **paginated sample table**, a **per-NIC snapshot**, and **CSV export** + share-link buttons
+- **Node detail page** — click any card (or open `#/node/<id>` directly) for a full-page view: CPU model / cores / MHz / L3 cache, distro + version + codename, kernel, process / thread counts, virtualization, swap and buff-cache, load average, plus **1 h / 6 h / 12 h / 24 h** charts for load (CPU/memory/disk), memory composition (used + buff-cache) and network rate. Also an **event log** derived on read (threshold breaches, offline gaps, ping timeout / loss / slow), a **per-NIC snapshot**, and a share-link button
 - **Floating nav panel** — node anchors with scroll-spy highlighting, mobile slide-out, back-to-top
 - **Encrypted data file** — PBKDF2-HMAC-SHA256 key derivation + SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
 - **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login, ping-target injection guard, node & body size caps
@@ -141,8 +141,8 @@ flipping the range paints instantly, then still refreshes in the background.
 | Endpoint | Auth | Description |
 |---|---|---|
 | `GET /api/health` | none | Health check |
-| `GET /api/nodes` | none | Public node list (masked IPs); at most 60 rate + 240 ping points per node |
-| `GET /api/nodes/{id}?range=86400` | none | Single-node detail (masked IP): full spec fields + ≤300 load and ≤300 ping points for the window. `range` is clamped to [300, 86400] |
+| `GET /api/nodes` | none | Public node list; at most 60 rate + 240 ping points per node. **Does not expose any IP** |
+| `GET /api/nodes/{id}?range=86400&end=<unix>` | none | Single-node detail: full spec fields + ≤300 load and ≤300 ping points for the window, derived events, thresholds, and the data extent (`oldest`/`newest`) used by the zoom controls. `range` is clamped to [300, 86400]; `end` defaults to now and cannot be in the future |
 | `POST /api/report` | `X-API-Key` | Agent report |
 | `POST /api/login` | none | Admin login (returns CSRF token) |
 | `POST /api/logout` | none | Admin logout |
@@ -150,7 +150,7 @@ flipping the range paints instantly, then still refreshes in the background.
 | `POST /api/admin/keys` | session+CSRF | Create API key |
 | `POST /api/admin/keys/{id}` | session+CSRF | Update key label |
 | `DELETE /api/admin/keys/{id}` | session+CSRF | Revoke key |
-| `GET /api/admin/nodes` | session | Node list (real IPs) |
+| `GET /api/admin/nodes` | session | Node list (includes the raw peer address, for troubleshooting only) |
 | `POST /api/admin/nodes` | session+CSRF | Edit node name/country |
 | `DELETE /api/admin/nodes/{id}` | session+CSRF | Delete + block node |
 | `GET /api/admin/blocked` | session | List blocked nodes |
@@ -169,6 +169,7 @@ flipping the range paints instantly, then still refreshes in the background.
 - Ping targets validated as `host:port` before being embedded in the agent script (blocks shell injection)
 - Node count, request body size and **per-report field whitelist** capped (`PROBE_MAX_NODES`, 64 KB) to prevent resource exhaustion
 - The per-NIC list and the interface-name field are rebuilt from a whitelist (characters stripped, numbers clamped, ≤8 entries), never copied from the client
+- **The public API does not expose any IP.** The server records the peer address it sees, but that is not the node's public IP behind NAT / a reverse proxy / multiple egress paths, so it is shown nowhere in the dashboard and only kept for administrator troubleshooting
 - Content-Security-Policy, X-Frame-Options, HSTS (on HTTPS), static file whitelist
 - Constant-time password and API-key comparison (`hmac.compare_digest`)
 - `X-Forwarded-For` spoofing blocked by default (`PROBE_TRUST_PROXY`)
