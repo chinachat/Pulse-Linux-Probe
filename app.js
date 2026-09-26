@@ -3,6 +3,12 @@
 const $ = s => document.querySelector(s);
 let _csrf = '';
 
+/* ---------- 视图状态：地区筛选 + 延迟图表区间 ---------- */
+const REGION_ALL = '__all__';   // 表示"不筛选"的哨兵值，不会与真实国家码冲突
+let _region = REGION_ALL;
+let _pingRange = 3600;          // 秒；默认只看最近 1 小时
+const PING_RANGE_LABELS = { 3600: '最近 1 小时', 21600: '最近 6 小时', 43200: '最近 12 小时', 86400: '最近 24 小时' };
+
 /* ---------- 主题：localStorage 记忆，覆盖 HTML 初始深色 ---------- */
 function syncThemeBtn() {
   const b = $('#theme');
@@ -90,15 +96,47 @@ function osIcon(os) {
 
 /* ---------- Ping 历史图（SVG 折线 + 面积渐变 + 端点） ---------- */
 let _uid = 0;
-function pingChart(svg, history = []) {
+
+/* 时间轴定位。服务端为兼顾"1 天"和"1 小时"两种尺度，下发的采样点疏密不均
+   （最近 60 个是 1 分钟粒度，更早的是抽样点），所以横坐标必须按真实时间算，
+   不能按序号等距——否则图上的"斜线"其实只是采样密度变化。 */
+function xPositions(samples, w) {
+  const n = samples.length;
+  if (n < 2) return [w / 2];
+  const t0 = Number(samples[0].time) || 0;
+  const t1 = Number(samples[n - 1].time) || 0;
+  if (t1 > t0) return samples.map(s => (Number(s.time) - t0) / (t1 - t0) * w);
+  return samples.map((_, i) => i * w / (n - 1));
+}
+
+/* 单个采样点的丢包比例（0~1）。0 表示该运营商未配置目标，不计入分母。 */
+function sampleLoss(sample) {
+  let lost = 0, total = 0;
+  ['ct', 'cu', 'cm'].forEach(k => {
+    const v = Number(sample[k]) || 0;
+    if (v < 0) { lost++; total++; } else if (v > 0) total++;
+  });
+  return total ? lost / total : 0;
+}
+
+/* 区间内的真实丢包率：失败探测数 / 总探测数 */
+function lossStats(samples) {
+  let lost = 0, total = 0;
+  samples.forEach(s => ['ct', 'cu', 'cm'].forEach(k => {
+    const v = Number(s[k]) || 0;
+    if (v < 0) { lost++; total++; } else if (v > 0) total++;
+  }));
+  return { lost, total, pct: total ? lost / total * 100 : 0 };
+}
+
+function pingChart(svg, samples = []) {
   const w = 600, h = 48, pad = 4;
-  const samples = history.slice(-60);
-  if (!samples.length) return;
+  if (!samples.length) { svg.innerHTML = ''; return; }
+  const xs = xPositions(samples, w);
   const all = samples.flatMap(s => ['ct', 'cu', 'cm'].map(k => Number(s[k]) || 0)).filter(v => v > 0);
+  if (!all.length) { svg.innerHTML = ''; return; }
   const peak = Math.max(1, ...all);
-  if (!all.length) return;
   const py = v => h - pad - (Number(v) || 0) / peak * (h - pad * 2);
-  const px = i => (samples.length > 1 ? i * w / (samples.length - 1) : w / 2);
   const cs = getComputedStyle(document.body);
   const colors = {
     ct: (cs.getPropertyValue('--ping-ct') || '#2979FF').trim(),
@@ -122,7 +160,7 @@ function pingChart(svg, history = []) {
     const pts = [];
     samples.forEach((s, i) => {
       const v = Number(s[k]) || 0;
-      if (v > 0) pts.push([px(i), py(v)]);
+      if (v > 0) pts.push([xs[i], py(v)]);
     });
     if (!pts.length) return;
     const line = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
@@ -141,6 +179,25 @@ function pingChart(svg, history = []) {
     if (spans[1]) spans[1].textContent = Math.round(peak / 2);
     if (spans[2]) spans[2].textContent = '0';
   }
+}
+
+/* ---------- 丢包图（与延迟图共用时间轴） ---------- */
+function lossChart(svg, samples = []) {
+  const w = 600, h = 18;
+  if (!samples.length) { svg.innerHTML = ''; return; }
+  const xs = xPositions(samples, w);
+  let bars = '';
+  for (let i = 0; i < samples.length; i++) {
+    const ratio = sampleLoss(samples[i]);
+    const x0 = xs[i];
+    const x1 = i + 1 < samples.length ? xs[i + 1] : w;
+    // 柱子宽度跟随实际时间间隔：抽样后的老数据格子更宽，图才没有说谎
+    const bw = Math.max(1.2, x1 - x0);
+    const bh = ratio > 0 ? Math.max(2.5, ratio * (h - 2)) : 1.2;
+    const cls = ratio >= 1 ? 'bad' : ratio >= 0.34 ? 'warn' : ratio > 0 ? 'low' : 'none';
+    bars += `<rect x="${x0.toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" class="loss-bar ${cls}"/>`;
+  }
+  svg.innerHTML = `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>` + bars;
 }
 
 /* ---------- 实时网络速率图（canvas 面积渐变 + 双曲线） ---------- */
@@ -211,6 +268,64 @@ function animateNumber(el, target, dur = 700) {
   requestAnimationFrame(step);
 }
 
+/* ---------- 地区分组 ---------- */
+function regionKey(node) {
+  return (node.country || '').toUpperCase() || '??';
+}
+
+function renderRegionTabs(nodes) {
+  const box = $('#region-tabs');
+  if (!box) return;
+  const counts = new Map();
+  nodes.forEach(n => {
+    const k = regionKey(n);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  });
+  // 选中的地区没有节点了（被删除或改了国家码）就退回"全部"
+  if (_region !== REGION_ALL && !counts.has(_region)) _region = REGION_ALL;
+  // 完全没有节点时把筛选栏收起，避免只剩一个"全部"
+  box.hidden = !nodes.length;
+  box.innerHTML = '';
+  const tab = (key, label, count) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'region-tab' + (key === _region ? ' active' : '');
+    b.innerHTML = label + '<em>' + count + '</em>';
+    b.onclick = () => {
+      if (_region === key) return;
+      _region = key;
+      if (_lastNodes) render(_lastNodes);
+    };
+    return b;
+  };
+  box.append(tab(REGION_ALL, '全部', nodes.length));
+  [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .forEach(([code, count]) => box.append(tab(code, countryFlag(code), count)));
+}
+
+/* ---------- 延迟图表区间：按时间截取采样点 ---------- */
+function pingWindow(node) {
+  const all = node.ping_history || [];
+  if (!all.length) return all;
+  // 以服务端时间戳为基准，避免浏览器时钟偏差把整段数据切掉
+  const now = Number(node.updated) || Number(all[all.length - 1].time) || 0;
+  const win = all.filter(s => (Number(s.time) || 0) >= now - _pingRange);
+  // 刚上线 / 时钟异常时可能筛空，退回最后几个点，别让图凭空消失
+  return win.length >= 2 ? win : all.slice(-Math.min(all.length, 30));
+}
+
+document.querySelectorAll('#ping-range button').forEach(btn => {
+  btn.onclick = () => {
+    const range = Number(btn.dataset.range) || 3600;
+    if (range === _pingRange) return;
+    _pingRange = range;
+    document.querySelectorAll('#ping-range button')
+      .forEach(x => x.classList.toggle('active', x === btn));
+    if (_lastNodes) render(_lastNodes);
+  };
+});
+
 /* ---------- 节点卡片 ---------- */
 function createCard(n, container) {
   const e = $('#node-card').content.cloneNode(true);
@@ -239,17 +354,20 @@ function createCard(n, container) {
   // 网络实时面板
   e.querySelector('.net').innerHTML = '<b>↓</b> ' + mbps(n.network_rx) + ' <b class="tx">↑</b> ' + mbps(n.network_tx);
   e.querySelector('.traffic').innerHTML = '<span class="tag">累计</span> ' + bytesTotal(n.net_total_rx, n.net_total_tx);
-  // Ping 徽章 + 丢包率
+  // Ping 徽章 + 丢包率（丢包率跟随所选区间，与下面的图表一致）
+  const win = pingWindow(n);
   const prow = e.querySelector('.ping-row');
   if (prow) {
     const icons = { ct: '电信', cu: '联通', cm: '移动' };
     const lr = {};
-    if (n.ping_history && n.ping_history.length) {
-      ['ct', 'cu', 'cm'].forEach(k => {
-        const lost = n.ping_history.filter(s => Number(s[k]) <= 0).length;
-        lr[k] = Math.round(lost / n.ping_history.length * 100);
+    ['ct', 'cu', 'cm'].forEach(k => {
+      let lost = 0, total = 0;
+      win.forEach(s => {
+        const v = Number(s[k]) || 0;
+        if (v < 0) { lost++; total++; } else if (v > 0) total++;
       });
-    }
+      if (total) lr[k] = Math.round(lost / total * 100);
+    });
     prow.innerHTML = ['ct', 'cu', 'cm'].map(k => {
       const v = n['tcp_ping_' + k];
       if (!v) return '';
@@ -266,9 +384,19 @@ function createCard(n, container) {
   e.querySelector('.uptime').innerHTML = '<span class="tag">运行</span> ' + duration(n.uptime);
   container.append(e);
   const card = container.lastElementChild;
-  // Ping 历史图
+  // Ping 延迟 + 丢包图（共用同一段区间）
   const ps = card.querySelector('.ping-svg');
-  if (ps && n.ping_history) pingChart(ps, n.ping_history);
+  if (ps) pingChart(ps, win);
+  const ls = card.querySelector('.loss-svg');
+  if (ls) lossChart(ls, win);
+  const lv = card.querySelector('.loss-val');
+  if (lv) {
+    const st = lossStats(win);
+    lv.textContent = st.total ? st.pct.toFixed(st.pct < 10 ? 1 : 0) + '%' : '—';
+    lv.className = 'loss-val ' + (st.pct === 0 ? 'ok' : st.pct < 5 ? 'warn' : 'bad');
+  }
+  const hint = card.querySelector('.chart-hint');
+  if (hint) hint.textContent = PING_RANGE_LABELS[_pingRange] || '';
   // 网络速率图（等布局完成后绘制，保证 canvas 宽度正确）
   const netCanvas = card.querySelector('.net-canvas');
   if (netCanvas) requestAnimationFrame(() => networkChart(netCanvas, n.history, n));
@@ -276,9 +404,11 @@ function createCard(n, container) {
 
 /* ---------- 仪表盘渲染 ---------- */
 function render(nodes) {
-  const onlineCount = nodes.filter(n => n.online).length;
-  animateNumber($('#online'), onlineCount);
-  animateNumber($('#total'), nodes.length);
+  _lastNodes = nodes;
+  const shown = _region === REGION_ALL ? nodes : nodes.filter(n => regionKey(n) === _region);
+  // 统计数字跟随筛选结果，避免"筛到一个地区却显示全网节点数"
+  animateNumber($('#online'), shown.filter(n => n.online).length);
+  animateNumber($('#total'), shown.length);
   const box = $('#nodes');
   box.innerHTML = '';
   // 空状态
@@ -287,12 +417,23 @@ function render(nodes) {
     d.className = 'empty-state';
     d.innerHTML = '<b>&#128225;</b><p>暂无节点上报</p><p>请在管理后台生成 API Key 并在目标主机安装客户端。</p>';
     box.appendChild(d);
+    renderRegionTabs(nodes);
+    updateGroupNav();
+    return;
+  }
+  if (!shown.length) {
+    const d = document.createElement('div');
+    d.className = 'empty-state';
+    d.innerHTML = '<b>&#128269;</b><p>该地区暂无节点</p><p>切换到「全部」查看所有节点。</p>';
+    box.appendChild(d);
+    renderRegionTabs(nodes);
     updateGroupNav();
     return;
   }
   // 平铺网格：在线优先、离线置后（组内保持 API 的名称排序）
-  const sorted = [...nodes].sort((a, b) => a.online === b.online ? 0 : a.online ? -1 : 1);
+  const sorted = [...shown].sort((a, b) => a.online === b.online ? 0 : a.online ? -1 : 1);
   sorted.forEach(n => createCard(n, box));
+  renderRegionTabs(nodes);
   updateGroupNav();
 }
 
@@ -304,7 +445,6 @@ async function refresh() {
     const sig = JSON.stringify(data);
     if (sig === _lastNodesSig) return;
     _lastNodesSig = sig;
-    _lastNodes = data;
     render(data);
   } catch (e) { console.error(e); }
 }
@@ -316,8 +456,14 @@ $('#theme').onclick = () => {
   syncThemeBtn();
   if (_lastNodes) render(_lastNodes);
 };
-$('#admin').onclick = () => { $('#dashboard').hidden = true; $('#admin-panel').hidden = false; };
-$('#back').onclick = () => { $('#dashboard').hidden = false; $('#admin-panel').hidden = true; };
+$('#admin').onclick = () => {
+  $('#dashboard').hidden = true; $('#admin-panel').hidden = false;
+  updateGroupNav();  // 否则桌面端节点导航会继续悬浮在后台面板上
+};
+$('#back').onclick = () => {
+  $('#dashboard').hidden = false; $('#admin-panel').hidden = true;
+  updateGroupNav();
+};
 
 /* ---------- 管理后台 ---------- */
 $('#login-btn').onclick = async () => {
@@ -574,6 +720,9 @@ function updateGroupNav() {
   if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }
   nav.style.display = '';
   nav.querySelectorAll('.nav-node').forEach(el => el.remove());
+  // 必须先断开：每次重绘都会生成一批全新的卡片，旧的被 remove 之后
+  // IntersectionObserver 仍持有引用，页面开久了会一直累积。
+  navObserver.disconnect();
   document.querySelectorAll('.card').forEach(card => {
     const s = card.querySelector('.node-title strong');
     if (!s) return;

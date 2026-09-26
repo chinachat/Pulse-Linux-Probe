@@ -9,9 +9,12 @@ services:
       PROBE_ADMIN_PASSWORD: ${PROBE_ADMIN_PASSWORD:?Set PROBE_ADMIN_PASSWORD in .env or the environment}
       PROBE_DATA_KEY: ${PROBE_DATA_KEY:?Set PROBE_DATA_KEY in .env or the environment}
       # 仅在部署了可信反向代理时开启；直连公网时开启会让攻击者可伪造
-      # X-Forwarded-For 绕过登录限流（见 DEPLOY.md「反向代理」一节）
-      PROBE_TRUST_PROXY: ${PROBE_TRUST_PROXY:-false}
-      PROBE_PUBLIC_URL: ${PROBE_PUBLIC_URL:-https://probe.example.com}
+      # X-Forwarded-For 绕过登录限流（见 DEPLOY.md「反向代理」一节）。
+      # 默认留空 = 关闭；只有 1/true/yes/on 才算开启（"false" 不再是开启）。
+      PROBE_TRUST_PROXY: ${PROBE_TRUST_PROXY:-}
+      # 留空则按请求的 Host 头推导安装脚本里的服务器地址。不要给默认值：
+      # 写死占位域名会让生成的客户端安装命令静默指向一台不存在的服务器。
+      PROBE_PUBLIC_URL: ${PROBE_PUBLIC_URL:-}
     volumes:
       - probe-data:/data
     restart: unless-stopped

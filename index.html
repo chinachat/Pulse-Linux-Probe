@@ -31,6 +31,18 @@
     </div>
   </section>
 
+  <!-- 地区筛选 + 延迟图表区间 -->
+  <section class="toolrow">
+    <nav id="region-tabs" class="region-tabs" aria-label="&#25353;&#22320;&#21306;&#31579;&#36873;"></nav>
+    <div class="range-pick" id="ping-range" role="group" aria-label="&#24310;&#36831;&#22270;&#34920;&#21306;&#38388;">
+      <span class="range-label">&#24310;&#36831;&#21306;&#38388;</span>
+      <button type="button" data-range="3600" class="active">1&#23567;&#26102;</button>
+      <button type="button" data-range="21600">6&#23567;&#26102;</button>
+      <button type="button" data-range="43200">12&#23567;&#26102;</button>
+      <button type="button" data-range="86400">24&#23567;&#26102;</button>
+    </div>
+  </section>
+
   <!-- 分组节点容器：JS 动态渲染 -->
   <section id="nodes" class="nodes"></section>
 </main>
@@ -164,10 +176,19 @@
     <div class="ping-row"></div>
 
     <div class="ping-chart">
-      <div class="chart-head"><span>&#24310;&#36831;&#21382;&#21490;</span></div>
+      <div class="chart-head">
+        <span>&#24310;&#36831;&#21382;&#21490;</span>
+        <em class="chart-hint"></em>
+      </div>
       <div class="chart-body">
         <div class="y-axis"><span></span><span></span><span></span></div>
         <svg class="ping-svg" viewBox="0 0 600 48" preserveAspectRatio="none"></svg>
+      </div>
+      <!-- 丢包：与上方延迟图共用时间轴，每根柱子 = 该时刻有多少运营商超时 -->
+      <div class="loss-row">
+        <span class="loss-tag">&#20002;&#21253;</span>
+        <svg class="loss-svg" viewBox="0 0 600 18" preserveAspectRatio="none"></svg>
+        <b class="loss-val">&#8212;</b>
       </div>
     </div>
 

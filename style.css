@@ -143,6 +143,85 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .stat-card b { display: block; font: 700 26px var(--font-mono); color: var(--accent, #10b981); line-height: 1.1; }
 .stat-card span { font-size: 11px; color: var(--muted); }
 
+/* ---------- 卡片上方的控制条：地区筛选 + 延迟区间 ---------- */
+.toolrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.region-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.region-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+  transition: all var(--speed);
+}
+.region-tab:hover { color: var(--accent, #10b981); border-color: var(--accent, #10b981); transform: none; }
+.region-tab.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, #10b981, #0d9668);
+  box-shadow: 0 4px 14px rgba(16, 185, 129, .32);
+}
+.region-tab img { width: 16px; height: 12px; border-radius: 2px; }
+.region-tab em {
+  font: 600 10px var(--font-mono);
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--bar-bg);
+  color: var(--muted);
+}
+.region-tab.active em { background: rgba(255, 255, 255, .22); color: #fff; }
+
+.range-pick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--card);
+}
+.range-pick .range-label {
+  font: 500 11px var(--font-sans);
+  color: var(--muted);
+  padding: 0 8px 0 6px;
+  white-space: nowrap;
+}
+.range-pick button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 11px;
+  border-radius: 16px;
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+  transition: all var(--speed);
+}
+.range-pick button:hover { color: var(--accent, #10b981); transform: none; }
+.range-pick button.active {
+  background: linear-gradient(135deg, #10b981, #0d9668);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(16, 185, 129, .3);
+}
+
 /* ---------- 节点平铺网格（无分组，卡片直接铺开） ---------- */
 #nodes {
   display: grid;
@@ -314,10 +393,30 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .ping-chart { border-top: 1px solid var(--line); padding-top: 8px; }
 .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .chart-head span { color: var(--muted); font: 10px var(--font-mono); }
+.chart-hint { color: var(--muted); font: 10px var(--font-sans); font-style: normal; opacity: .85; }
 .chart-body { display: flex; gap: 0; }
 .ping-svg { display: block; width: 100%; height: 56px; }
 .y-axis { display: flex; flex-direction: column; justify-content: space-between; width: 30px; flex-shrink: 0; padding: 2px 4px 4px 0; }
 .y-axis span { font: 8px var(--font-mono); color: var(--muted); text-align: right; line-height: 1; }
+
+/* ---------- 丢包图（与延迟图共用时间轴） ---------- */
+.loss-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-left: 30px;   /* 与上方延迟图的数据区左边界对齐（跳过 y 轴宽度） */
+}
+.loss-tag { color: var(--muted); font: 10px var(--font-mono); flex-shrink: 0; }
+.loss-svg { display: block; flex: 1; min-width: 0; height: 18px; }
+.loss-val { font: 600 10px var(--font-mono); flex-shrink: 0; min-width: 34px; text-align: right; color: var(--muted); }
+.loss-val.ok { color: var(--muted); }
+.loss-val.warn { color: #f59e0b; }
+.loss-val.bad { color: #ef4444; }
+.loss-bar.none { fill: var(--line); }
+.loss-bar.low { fill: #10b981; opacity: .75; }
+.loss-bar.warn { fill: #f59e0b; }
+.loss-bar.bad { fill: #ef4444; }
 
 /* 卡片底部 */
 .card-foot { border-top: 1px dashed var(--line); padding-top: 8px; }
@@ -526,4 +625,10 @@ footer svg { flex-shrink: 0; }
   .card-head { flex-direction: column; align-items: flex-start; }
   .node-badges { width: 100%; }
   .topbar { height: 58px; }
+  /* 控制条在窄屏改为横向滚动，避免地区多时把卡片挤下去 */
+  .toolrow { flex-direction: column; align-items: stretch; gap: 8px; }
+  .region-tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+  .region-tab { flex-shrink: 0; }
+  .range-pick { justify-content: space-between; }
+  .range-pick .range-label { padding-left: 8px; }
 }

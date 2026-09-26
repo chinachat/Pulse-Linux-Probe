@@ -40,7 +40,7 @@
 
 - **服务端**：单文件 `server.py`，Python 3 标准库实现，无任何第三方依赖
 - **客户端**：`agent.sh` 生成的 Bash 脚本 + cron 每分钟上报，依赖 `curl`、`awk`、`free`、`df`
-- **数据存储**：单文件 `data.enc`（SHA-256 密钥流加密 + HMAC-SHA256 完整性校验，原子写入）
+- **数据存储**：单文件 `data.enc`（PBKDF2-HMAC-SHA256 派生密钥 + SHA-256 密钥流加密 + HMAC-SHA256 完整性校验，原子写入）
 
 ## 2. 部署前准备
 
@@ -217,11 +217,12 @@ rm -f /usr/local/bin/linux-probe-payload /var/lib/linux-probe-network
 | `PROBE_ADMIN_PASSWORD` | `change-me` | 管理员密码（**必须修改**） |
 | `PROBE_DATA_KEY` | 由管理员密码派生 | `data.enc` 加密密钥，建议独立设置且不再变更 |
 | `PROBE_DATA_DIR` | 项目目录 | 数据文件目录（Docker 中为 `/data`） |
-| `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装命令使用的外部地址 |
+| `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装命令使用的外部地址；留空则按请求的 Host 头推导 |
 | `PROBE_SESSION_TTL` | `43200`（12h） | 后台会话有效期（秒） |
 | `PROBE_OFFLINE_SECONDS` | `90` | 超过该秒数未上报判定离线 |
 | `PROBE_MAX_NODES` | `200` | 节点数上限（防止持钥者刷 hostname 耗尽存储） |
-| `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For / X-Real-IP 获取真实 IP（仅在有可信反代时开启） |
+| `PROBE_PING_HISTORY` | `1440` | 每节点保留的延迟采样数（1 分钟一个，1440 = 24 小时） |
+| `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For / X-Real-IP 获取真实 IP（仅在有可信反代时开启）。只有 `1`/`true`/`yes`/`on` 算开启，`false`/`0`/空值均为关闭 |
 
 ## 8. 老版本升级迁移指南
 

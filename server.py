@@ -14,14 +14,20 @@ DATA_FILE = DATA_DIR / "data.enc"
 LEGACY_DATA_FILE = DATA_DIR / "data.json"
 ADMIN_USER = os.getenv("PROBE_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("PROBE_ADMIN_PASSWORD", "change-me")
-DATA_KEY = hashlib.sha256((os.getenv("PROBE_DATA_KEY") or ADMIN_PASSWORD).encode()).digest()
+ENV_DATA_KEY = os.getenv("PROBE_DATA_KEY") or ADMIN_PASSWORD
 PUBLIC_URL = os.getenv("PROBE_PUBLIC_URL", "").rstrip("/")
 SESSION_TTL = int(os.getenv("PROBE_SESSION_TTL", str(12 * 3600)))
 OFFLINE_SECONDS = int(os.getenv("PROBE_OFFLINE_SECONDS", "90"))
-TRUST_PROXY = bool(os.getenv("PROBE_TRUST_PROXY"))
-HISTORY_LIMIT = 120
+# 只有显式的真值才算开启。不能写成 bool(os.getenv(...))：docker-compose.yml
+# 会注入同名变量，`PROBE_TRUST_PROXY=false` 是非空字符串，bool() 得到 True，
+# 等于把"关闭"读成"开启"（后果见 README 的「反向代理」一节）。
+TRUST_PROXY = os.getenv("PROBE_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes", "on")
+RATE_HISTORY_LIMIT = 120          # 速率样本：约 2 小时（1 分钟粒度），图表只用最近 30 个
+PING_HISTORY_LIMIT = int(os.getenv("PROBE_PING_HISTORY", "1440"))  # 延迟样本：1 天（1 分钟粒度）
 LOGIN_WINDOW = 300
 LOGIN_MAX_FAILURES = 5
+LOGIN_MAX_TRACKED_IPS = 10000  # 登录失败计数表上限，防伪造 IP 无限增长
+LOGIN_PRUNE_INTERVAL = 60      # 全表清理的最小间隔（秒），避免每次登录都做 O(n) 扫描
 MAX_NODES = int(os.getenv("PROBE_MAX_NODES", "200"))
 MAX_BODY = 64 * 1024  # 64KB 请求体上限，防未认证端点内存/线程 DoS
 STATIC_FILES = {"index.html", "app.js", "style.css"}
@@ -29,6 +35,21 @@ HOST_RE = re.compile(r"[A-Za-z0-9.-]+(:\d{1,5})?")
 # 仅接受 host:port（域名/IPv4），端口 1-65535。该值会原样嵌入 agent 脚本的
 # shell 调用点（单引号包裹），格式校验是防止命令注入的关键防线（agent.sh 侧另有防御）。
 PING_TARGET_RE = re.compile(r"^[A-Za-z0-9.-]+:\d{1,5}$")
+# data.enc 容器版本：v1 = nonce||tag||cipher（密钥是裸 SHA-256），
+# v2 = MAGIC||salt||nonce||tag||cipher（密钥是 PBKDF2-HMAC-SHA256）。
+FILE_MAGIC_V2 = b"PULSEv2\n"
+KDF_ITERATIONS = 600_000
+# 上报字段白名单：(最小值, 最大值)。持钥者只能写这些字段，且值被强制为有限数值，
+# 否则可以把任意 JSON 灌进节点记录，再靠 history 放大 120 倍（见 README「安全」）。
+REPORT_FIELDS = {
+    "cpu": (0.0, 100.0), "memory": (0.0, 100.0), "disk": (0.0, 100.0),
+    "uptime": (0.0, 1e15), "cpu_cores": (0.0, 1e9),
+    "mem_total": (0.0, 1e15), "disk_total": (0.0, 1e15),
+    "network_rx": (0.0, 1e15), "network_tx": (0.0, 1e15),
+    "net_total_rx": (0.0, 1e15), "net_total_tx": (0.0, 1e15),
+    "tcp_ping_ct": (-1.0, 1e6), "tcp_ping_cu": (-1.0, 1e6), "tcp_ping_cm": (-1.0, 1e6),
+}
+REPORT_STRINGS = (("hostname", 100, "unknown"), ("name", 60, ""), ("os", 120, ""))
 
 def valid_ping_target(value):
     if not value:
@@ -54,28 +75,80 @@ LOGIN_FAILURES = {}  # client ip -> [failure timestamps]
 LOCK = threading.RLock()
 _AGENT_SCRIPT = None
 _LAST_SAVE = 0.0
-SAVE_DEBOUNCE = 5  # seconds between automatic saves
+_LAST_LOGIN_PRUNE = 0.0
+SAVE_DEBOUNCE_MIN = 5      # 两次自动落盘的最小间隔（秒）
+SAVE_DEBOUNCE_MAX = 120    # 上限：节点多 / 历史长时允许放宽到 2 分钟
+_SAVE_DEBOUNCE = SAVE_DEBOUNCE_MIN
+# /api/nodes 下发的采样点数上限。服务端保留完整历史，但全量下发没有意义：
+# 图表宽度只有几百像素，而且 200 个节点 × 1440 个点会让响应体膨胀到十几 MB。
+API_RATE_POINTS = 60       # 速率图只画最近 30 个点，60 个足够
+API_PING_POINTS = 240      # 延迟图（含丢包）最多 240 个点
+API_PING_KEEP_RECENT = 60  # 其中最近 60 个保持原始 1 分钟粒度，供"最近 1 小时"使用
+
+# v2 salt，由 load_data() 决定；DATA_KEY 是实际用于加解密的派生密钥。
+SALT = None
+DATA_KEY = hashlib.sha256(ENV_DATA_KEY.encode()).digest()  # v1 密钥，仅在读取旧文件时使用
 
 def csrf_token(session_token):
     return SESSIONS.get(session_token, {}).get("csrf", "")
 
-def crypt(data, nonce):
-    out = bytearray()
-    for offset in range(0, len(data), 32):
-        stream = hashlib.sha256(DATA_KEY + nonce + (offset // 32).to_bytes(8, "big")).digest()
-        out.extend(a ^ b for a, b in zip(data[offset:offset + 32], stream))
-    return bytes(out)
+def derive_key(salt):
+    """把口令拉伸成数据密钥。裸 SHA-256 单次迭代挡不住对 data.enc 的离线爆破；
+    PBKDF2 只在启动时算一次，后续加解密复用内存中的结果。"""
+    return hashlib.pbkdf2_hmac("sha256", ENV_DATA_KEY.encode(), salt, KDF_ITERATIONS)
+
+def crypt(data, nonce, key):
+    """SHA-256 计数器流异或。密钥流逐块生成，但异或用大整数一次完成：
+    逐字节的 Python 循环在 17MB 上要花 1.6 秒，而 int 异或走 C 实现，
+    输出与逐字节版本逐位相同（不影响已有文件）。"""
+    n = len(data)
+    if not n:
+        return b""
+    stream = b"".join(hashlib.sha256(key + nonce + (offset // 32).to_bytes(8, "big")).digest()
+                      for offset in range(0, n, 32))
+    return (int.from_bytes(data, "big") ^ int.from_bytes(stream[:n], "big")).to_bytes(n, "big")
+
+def parse_container(raw):
+    """拆开磁盘容器，返回 (salt, nonce, tag, cipher)；v1 布局的 salt 为 None。"""
+    if raw.startswith(FILE_MAGIC_V2):
+        body = raw[len(FILE_MAGIC_V2):]
+        return body[:16], body[16:32], body[32:64], body[64:]
+    return None, raw[:16], raw[16:48], raw[48:]
 
 def load_data():
+    global DATA_KEY, SALT
     if DATA_FILE.exists():
         raw = base64.b64decode(DATA_FILE.read_bytes())
-        nonce, tag, cipher = raw[:16], raw[16:48], raw[48:]
-        if not hmac.compare_digest(tag, hmac.new(DATA_KEY, nonce + cipher, hashlib.sha256).digest()):
-            raise RuntimeError("data file integrity check failed")
-        return json.loads(crypt(cipher, nonce))
-    return json.loads(LEGACY_DATA_FILE.read_text()) if LEGACY_DATA_FILE.exists() else {"keys": [], "nodes": {}}
+        salt, nonce, tag, cipher = parse_container(raw)
+        key = derive_key(salt) if salt is not None else DATA_KEY
+        if not hmac.compare_digest(tag, hmac.new(key, nonce + cipher, hashlib.sha256).digest()):
+            log.error("data file integrity check failed: %s", DATA_FILE)
+            log.error("Refusing to start. Restore a backup of data.enc, or remove it to start fresh.")
+            sys.exit(1)
+        if salt is None:
+            # 旧文件已经用 v1 密钥读出来了：换新 salt，下次保存自动升级成 v2。
+            SALT = secrets.token_bytes(16)
+            DATA_KEY = derive_key(SALT)
+            log.info("legacy data file detected; it will be re-encrypted with PBKDF2 on the next save")
+        else:
+            SALT, DATA_KEY = salt, key
+        return json.loads(crypt(cipher, nonce, key))
+    SALT = secrets.token_bytes(16)
+    DATA_KEY = derive_key(SALT)
+    if LEGACY_DATA_FILE.exists():
+        return json.loads(LEGACY_DATA_FILE.read_text())
+    return {"keys": [], "nodes": {}}
 
-DATA = load_data()
+try:
+    DATA = load_data()
+except SystemExit:
+    raise
+except Exception as exc:  # 磁盘损坏 / base64 或 JSON 解析失败
+    log.error("failed to read %s: %s", DATA_FILE, exc)
+    log.error("Refusing to start. Restore a backup of data.enc, or remove it to start fresh.")
+    sys.exit(1)
+
+DATA.setdefault("keys", [])
 DATA.setdefault("blocked_nodes", [])
 DATA.setdefault("settings", {})
 DATA["revoked_keys"] = set(DATA.get("revoked_keys", []))
@@ -96,25 +169,91 @@ def get_agent_script():
     return _AGENT_SCRIPT
 
 def save_data(force=False):
-    global _LAST_SAVE
+    global _LAST_SAVE, _SAVE_DEBOUNCE
     now = time.time()
-    if not force and now - _LAST_SAVE < SAVE_DEBOUNCE:
+    if not force and now - _LAST_SAVE < _SAVE_DEBOUNCE:
         return
     _LAST_SAVE = now
+    started = time.perf_counter()
     nonce = secrets.token_bytes(16)
     serializable = dict(DATA)
     serializable["revoked_keys"] = list(DATA["revoked_keys"])
-    cipher = crypt(json.dumps(serializable, separators=(",", ":")).encode(), nonce)
+    cipher = crypt(json.dumps(serializable, separators=(",", ":")).encode(), nonce, DATA_KEY)
     tag = hmac.new(DATA_KEY, nonce + cipher, hashlib.sha256).digest()
     tmp = DATA_FILE.with_suffix(".tmp")
-    tmp.write_bytes(base64.b64encode(nonce + tag + cipher))
+    tmp.write_bytes(base64.b64encode(FILE_MAGIC_V2 + SALT + nonce + tag + cipher))
+    os.chmod(tmp, 0o600)
     os.replace(tmp, DATA_FILE)  # atomic rename; a crash cannot corrupt data.enc
+    # 自调节去抖：写盘全程持 LOCK，节点多/历史长时单次写盘可达秒级。
+    # 让间隔跟随实测耗时，把写盘占用压到约 10% 时间以内。
+    # 代价是崩溃时可能丢失更长的窗口（最多 SAVE_DEBOUNCE_MAX 秒），
+    # 而节点每分钟就会重新上报一次，可以接受。
+    _SAVE_DEBOUNCE = min(SAVE_DEBOUNCE_MAX,
+                         max(SAVE_DEBOUNCE_MIN, (time.perf_counter() - started) * 10))
+
+def flush_data():
+    """收到 SIGTERM / 进程退出时，把去抖窗口内还没落盘的上报补写一次。"""
+    try:
+        save_data(force=True)
+    except Exception:
+        log.exception("failed to flush data on shutdown")
+
+def prune_login_failures(now):
+    """清理过期的登录失败记录并给表大小封顶（调用方需持有 LOCK）。
+    只挂在登录请求上且全表扫描限频；否则伪造 X-Forwarded-For 的攻击者
+    能给每个 IP 留一条记录，让这个字典无限增长。"""
+    global _LAST_LOGIN_PRUNE
+    if now - _LAST_LOGIN_PRUNE < LOGIN_PRUNE_INTERVAL:
+        return
+    _LAST_LOGIN_PRUNE = now
+    for ip in [i for i, ts in LOGIN_FAILURES.items() if not ts or now - ts[-1] >= LOGIN_WINDOW]:
+        LOGIN_FAILURES.pop(ip, None)
+    overflow = len(LOGIN_FAILURES) - LOGIN_MAX_TRACKED_IPS
+    if overflow > 0:
+        for ip in list(LOGIN_FAILURES)[:overflow]:
+            LOGIN_FAILURES.pop(ip, None)
+
+def key_matches(candidate, keys):
+    """常量时间比较 API Key，避免逐字节比较带来的时序泄漏。"""
+    matched = False
+    for k in keys:
+        matched |= hmac.compare_digest(str(k.get("key", "")), str(candidate))
+    return matched
 
 def mask_ip(ip):
     if not ip: return "hidden"
+    ip = ip[:45]
     if ":" in ip: return ":".join(ip.split(":")[:2]) + "::****"
     pieces = ip.split(".")
     return ".".join(pieces[:2]) + ".*.*" if len(pieces) == 4 else "hidden"
+
+def clamp_num(value, lo, hi):
+    """把上报值强制成 [lo, hi] 内的有限浮点数，非法输入归零。"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v != v or v in (float("inf"), float("-inf")):  # NaN / ±inf
+        return 0.0
+    return min(max(v, lo), hi)
+
+def sanitize_report(body):
+    """按白名单重建上报内容。
+
+    不能写成 {**old, **body}：持钥者可以塞任意键和任意大小的值，它们会留在
+    节点记录里并被 history 复制 120 份，把内存和 data.enc 一起撑爆。
+    """
+    clean = {}
+    for field, (lo, hi) in REPORT_FIELDS.items():
+        if field in body:
+            clean[field] = clamp_num(body[field], lo, hi)
+    for field, limit, default in REPORT_STRINGS:
+        raw = body.get(field, default)
+        clean[field] = (default if raw is None else str(raw))[:limit]
+    clean["hostname"] = clean["hostname"] or "unknown"
+    # 国家码只保留字母，前端还有一次正则校验（双保险，避免拼进 innerHTML）
+    clean["country"] = re.sub(r"[^A-Za-z]", "", str(body.get("country", "")))[:2].upper()
+    return clean
 
 def prune_sessions():
     now = time.time()
@@ -122,7 +261,48 @@ def prune_sessions():
         for token in [t for t, s in SESSIONS.items() if s["expiry"] < now]:
             SESSIONS.pop(token, None)
 
+def is_lossy(sample):
+    """该采样点是否有运营商连接超时（-1）。0 表示未配置目标，不算丢包。"""
+    return any(clamp_num(sample.get(k), -1.0, 1e6) < 0 for k in ("ct", "cu", "cm"))
+
+def compact_ping_history(series, limit, keep_recent):
+    """把全天 1 分钟粒度的序列压到 limit 个点。
+
+    最近 keep_recent 个点原样保留（"最近 1 小时"要看细节），更早的部分等距抽样，
+    但**优先保留出现超时的采样点** —— 否则一个 1 分钟的抖动会被抽样直接抹掉，
+    而"什么时候抖过"恰恰是这张图存在的意义。
+    """
+    if limit <= 0 or len(series) <= limit:
+        return series
+    keep_recent = min(keep_recent, limit)
+    cut = len(series) - keep_recent
+    older, recent = series[:cut], series[cut:]
+    budget = limit - keep_recent
+    if budget <= 0:
+        return recent
+    lossy = [i for i, s in enumerate(older) if is_lossy(s)]
+    clean = [i for i, s in enumerate(older) if not is_lossy(s)]
+    picked = set()
+    if len(lossy) > budget:
+        # 超时点本身就超过预算，只能等距取
+        picked.update(lossy[int(i * len(lossy) / budget)] for i in range(budget))
+    else:
+        picked.update(lossy)
+        room = budget - len(lossy)
+        if room > 0 and clean:
+            picked.update(clean[int(i * len(clean) / room)] for i in range(room))
+    return [older[i] for i in sorted(picked)] + recent
+
+def compact_series(series, limit):
+    """速率序列只需保留最近若干点（前端只画最近 30 个）。"""
+    return series[-limit:] if limit > 0 else series
+
 class App(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        # 静态文件必须相对脚本目录解析：SimpleHTTPRequestHandler 默认用进程 CWD，
+        # 而 DATA_DIR 默认用脚本目录；两者不一致时从别处启动服务会整站 404。
+        super().__init__(*args, directory=str(ROOT), **kwargs)
+
     def log_message(self, *args):
         pass  # structured events go through the logger instead
 
@@ -152,9 +332,12 @@ class App(SimpleHTTPRequestHandler):
         if length > MAX_BODY:
             return False  # sentinel: body too large (caller replies 413)
         try:
-            return json.loads(self.rfile.read(length))
+            body = json.loads(self.rfile.read(length))
         except (ValueError, json.JSONDecodeError):
             return None
+        # 只接受 JSON 对象：数组/字符串/数字/布尔的 .get() 会抛未捕获的
+        # AttributeError，未认证端点也能触发（连接被直接断开，且没有任何响应）。
+        return body if isinstance(body, dict) else None
 
     def session_token(self):
         c = SimpleCookie(self.headers.get("Cookie"))
@@ -167,14 +350,21 @@ class App(SimpleHTTPRequestHandler):
         # otherwise anyone could spoof their displayed IP.
         if TRUST_PROXY:
             xff = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            if xff: return xff
+            if xff: return self._clean_forwarded(xff)
             xri = self.headers.get("X-Real-IP", "").strip()
-            if xri: return xri
+            if xri: return self._clean_forwarded(xri)
         return self.client_address[0]
+
+    def _clean_forwarded(self, value):
+        # 头内容由客户端控制：丢掉非 IP 字符并限长，免得它变成任意写入节点记录的串。
+        cleaned = re.sub(r"[^0-9A-Fa-f:.]", "", value)[:45]
+        return cleaned or self.client_address[0]
 
     def is_admin(self):
         token = self.session_token()
         if not token: return False
+        if len(SESSIONS) > 64:
+            prune_sessions()  # 过期会话只在登录时清理的话会一直堆着
         with LOCK:
             s = SESSIONS.get(token)
             if not s: return False
@@ -203,13 +393,23 @@ class App(SimpleHTTPRequestHandler):
                 snapshot = list(DATA["nodes"].values())
             nodes = []
             for node in snapshot:
-                n = dict(node); n["ip"] = mask_ip(n.get("ip")); n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
+                n = dict(node)
+                n["ip"] = mask_ip(n.get("ip"))
+                n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
+                # 只下发图表够用的点数：全量 1440 点 × 200 节点会把响应撑到十几 MB，
+                # 而图表宽度只有几百像素。
+                n["history"] = compact_series(n.get("history", []), API_RATE_POINTS)
+                n["ping_history"] = compact_ping_history(n.get("ping_history", []),
+                                                         API_PING_POINTS, API_PING_KEEP_RECENT)
                 nodes.append(n)
             return self.send_json({"nodes": sorted(nodes, key=lambda n: n.get("name", ""))})
         if path == "/api/admin/nodes":
             if self.require_admin():
                 with LOCK:
-                    nodes = list(DATA["nodes"].values())
+                    # 管理列表只用于改名/改国家码，不画图表；带上历史只会白白撑大响应
+                    nodes = [{k: v for k, v in node.items()
+                              if k not in ("history", "ping_history")}
+                             for node in DATA["nodes"].values()]
                 self.send_json({"nodes": nodes})
             return
         if path == "/api/admin/keys":
@@ -232,7 +432,9 @@ class App(SimpleHTTPRequestHandler):
         if path == "/api/install.sh":
             if not self.require_admin(): return
             key = parse_qs(parsed.query).get("key", [""])[0]
-            if not any(k["key"] == key for k in DATA["keys"]): return self.send_json({"error": "invalid key"}, 400)
+            with LOCK:
+                valid = key_matches(key, DATA["keys"])
+            if not valid: return self.send_json({"error": "invalid key"}, 400)
             host = self.headers.get("Host", "")
             if not PUBLIC_URL and not HOST_RE.fullmatch(host):
                 return self.send_json({"error": "invalid host header"}, 400)
@@ -266,13 +468,16 @@ class App(SimpleHTTPRequestHandler):
             ip = self.client_ip()
             now = time.time()
             with LOCK:
+                prune_login_failures(now)
                 fails = [t for t in LOGIN_FAILURES.get(ip, []) if now - t < LOGIN_WINDOW]
                 if len(fails) >= LOGIN_MAX_FAILURES:
                     log.warning("login rate-limited for %s", ip)
                     return self.send_json({"error": "too many attempts, try again later"}, 429)
                 username, password = str(body.get("username", "")), str(body.get("password", ""))
-                if not (hmac.compare_digest(username.encode(), admin_user().encode())
-                        and hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())):
+                # 两个比较都要算完（& 而不是 and），避免用户名错时整个跳过密码比较
+                user_ok = hmac.compare_digest(username.encode(), admin_user().encode())
+                pass_ok = hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode())
+                if not (user_ok & pass_ok):
                     fails.append(now); LOGIN_FAILURES[ip] = fails
                     log.warning("login failed for user %r from %s", username, ip)
                     return self.send_json({"error": "invalid credentials"}, 401)
@@ -293,16 +498,14 @@ class App(SimpleHTTPRequestHandler):
                 if key in DATA["revoked_keys"]:
                     log.warning("report dropped: revoked key %s... from %s", key[:8], self.client_ip())
                     return self.send_empty()
-                valid = any(k["key"] == key for k in DATA["keys"])
+                valid = key_matches(key, DATA["keys"])
             if not valid: return self.send_json({"error": "invalid key"}, 401)
-            hostname = str(body.get("hostname", "unknown"))[:100]
-            body["name"] = str(body.get("name", ""))[:60]
+            clean = sanitize_report(body)
+            hostname = clean["hostname"]
             node_id = hashlib.sha256((key + hostname).encode()).hexdigest()[:16]
             if node_id in blocked_ids():
                 log.info("report dropped: blocked node %s (%s) from %s", node_id, hostname, self.client_ip())
                 return self.send_empty()
-            body["country"] = str(body.get("country", ""))[:2].upper()
-            body["os"] = str(body.get("os", ""))[:120]
             ip = self.client_ip()
             with LOCK:
                 old = DATA["nodes"].get(node_id, {})
@@ -312,13 +515,19 @@ class App(SimpleHTTPRequestHandler):
                                 MAX_NODES, hostname, ip)
                     return self.send_json({"error": "node limit reached"}, 429)
                 now = time.time()
-                sample = {"time": now, "rx": body.get("network_rx", 0), "tx": body.get("network_tx", 0),
-                          "cpu": body.get("cpu", 0), "memory": body.get("memory", 0), "disk": body.get("disk", 0)}
-                history = (old.get("history", []) + [sample])[-HISTORY_LIMIT:]
-                ping_sample = {"time": now, "ct": body.get("tcp_ping_ct", 0), "cu": body.get("tcp_ping_cu", 0), "cm": body.get("tcp_ping_cm", 0)}
-                ping_history = (old.get("ping_history", []) + [ping_sample])[-HISTORY_LIMIT:]
+                sample = {"time": now, "rx": clean.get("network_rx", 0), "tx": clean.get("network_tx", 0),
+                          "cpu": clean.get("cpu", 0), "memory": clean.get("memory", 0), "disk": clean.get("disk", 0)}
+                history = (old.get("history", []) + [sample])[-RATE_HISTORY_LIMIT:]
+                ping_sample = {"time": now, "ct": clean.get("tcp_ping_ct", 0), "cu": clean.get("tcp_ping_cu", 0), "cm": clean.get("tcp_ping_cm", 0)}
+                ping_history = (old.get("ping_history", []) + [ping_sample])[-PING_HISTORY_LIMIT:]
+                # 管理员改过的名称/国家码优先于客户端上报
                 edited = {field: old[field] for field in ("name", "country") if old.get(field)}
-                DATA["nodes"][node_id] = {**old, **body, **edited, "history": history, "ping_history": ping_history, "id": node_id, "hostname": hostname, "ip": ip, "updated": now}
+                # 整体重建而不是合并 old：顺手清掉旧版本可能残留的越界字段
+                record = dict(clean)
+                record.update(edited)
+                record.update({"history": history, "ping_history": ping_history, "id": node_id,
+                               "hostname": hostname, "ip": ip, "updated": now})
+                DATA["nodes"][node_id] = record
                 save_data()  # debounced; safe to skip writes under high report volume
             if not old:
                 log.info("node %s (%s) first reported from %s", node_id, hostname, ip)
@@ -330,8 +539,8 @@ class App(SimpleHTTPRequestHandler):
                 DATA["keys"].append(item); save_data(force=True)
             log.info("api key %s created (label %r)", item["id"], item["label"])
             return self.send_json(item, 201)
-        if self.path.startswith("/api/admin/keys/"):
-            key_id = self.path.rsplit("/", 1)[-1]
+        if path.startswith("/api/admin/keys/"):
+            key_id = path[len("/api/admin/keys/"):]
             label = str(body.get("label", "")).strip()[:60]
             if not label: return self.send_json({"error": "label required"}, 400)
             with LOCK:
@@ -343,8 +552,9 @@ class App(SimpleHTTPRequestHandler):
                         return self.send_json(k)
             return self.send_json({"error": "key not found"}, 404)
         if path == "/api/admin/nodes":
+            node_id = str(body.get("id") or "")
             with LOCK:
-                node = DATA["nodes"].get(body.get("id"))
+                node = DATA["nodes"].get(node_id)
                 if node:
                     node["name"] = str(body.get("name", node.get("name", "")))[:60]
                     node["country"] = str(body.get("country", node.get("country", "")))[:2].upper()
@@ -383,9 +593,10 @@ class App(SimpleHTTPRequestHandler):
         return self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
+        path = urlparse(self.path).path
         if not self.require_admin(): return
-        if self.path.startswith("/api/admin/nodes/"):
-            node_id = self.path.rsplit("/", 1)[-1]
+        if path.startswith("/api/admin/nodes/"):
+            node_id = path[len("/api/admin/nodes/"):]
             with LOCK:
                 if node_id not in DATA["nodes"]:
                     node = None
@@ -398,8 +609,8 @@ class App(SimpleHTTPRequestHandler):
             if not node: return self.send_json({"error": "node not found"}, 404)
             log.info("node %s deleted and blocked", node_id)
             return self.send_json({"ok": True})
-        if self.path.startswith("/api/admin/keys/"):
-            key_id = self.path.rsplit("/", 1)[-1]
+        if path.startswith("/api/admin/keys/"):
+            key_id = path[len("/api/admin/keys/"):]
             with LOCK:
                 removed = [x for x in DATA["keys"] if x["id"] == key_id]
                 if removed:
@@ -413,6 +624,12 @@ class App(SimpleHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
 if __name__ == "__main__":
+    import atexit, signal
+
     port = int(os.getenv("PORT", "8080"))
+    # 上报写盘有 5 秒去抖窗口；收到 SIGTERM（docker stop / systemctl stop）时必须
+    # 补写一次，否则窗口内的样本会丢。
+    atexit.register(flush_data)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log.info("pulse-probe listening on 0.0.0.0:%d", port)
     ThreadingHTTPServer(("0.0.0.0", port), App).serve_forever()

@@ -2,6 +2,12 @@
 set -eu
 SERVER="__SERVER__"
 API_KEY="__API_KEY__"
+# 安装脚本要写 /usr/local/bin、/var/lib 并改 root 的 crontab；非 root 会以一堆
+# 难以理解的报错失败，这里提前给出明确提示。
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'This installer must run as root (it writes /usr/local/bin, /var/lib and the root crontab).' >&2
+  exit 1
+fi
 install -d /usr/local/bin
 cat > /usr/local/bin/linux-probe-payload <<'EOF'
 #!/usr/bin/env bash
@@ -92,11 +98,21 @@ do_ping() {
 tcp_ping_ct=$(do_ping '__PING_CT__')
 tcp_ping_cu=$(do_ping '__PING_CU__')
 tcp_ping_cm=$(do_ping '__PING_CM__')
-printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s,"net_total_rx":%s,"net_total_tx":%s}' "$(hostname)" "$(hostname)" "$country" "$os" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm" "$total_rx" "$total_tx"
+# 上报 JSON 由 printf 拼装：hostname / PRETTY_NAME 里若含 `"` 或 `\`，拼出来的
+# JSON 就是非法的，服务端回 400，而 cron 把错误吞掉 —— 表现为节点静默不上线。
+# 这里转义反斜杠和双引号，并去掉控制字符（含换行）。
+json_escape() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '%s' "$s" | tr -d '[:cntrl:]'
+}
+printf '{"hostname":"%s","name":"%s","country":"%s","os":"%s","uptime":%s,"cpu":%s,"memory":%s,"disk":%s,"network_rx":%s,"network_tx":%s,"cpu_cores":%s,"mem_total":%s,"disk_total":%s,"tcp_ping_ct":%s,"tcp_ping_cu":%s,"tcp_ping_cm":%s,"net_total_rx":%s,"net_total_tx":%s}' "$(json_escape "$(hostname)")" "$(json_escape "$(hostname)")" "$country" "$(json_escape "$os")" "$up" "$cpu" "$mem" "$disk" "$net_rx" "$net_tx" "$cpu_cores" "$mem_total" "$disk_total" "$tcp_ping_ct" "$tcp_ping_cu" "$tcp_ping_cm" "$total_rx" "$total_tx"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload
 report="$(/usr/local/bin/linux-probe-payload)"
-curl -fsS --connect-timeout 10 -X POST "$SERVER/api/report" -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -d "$report" >/dev/null
-line="* * * * * $(command -v curl) -fsS -X POST $SERVER/api/report -H 'X-API-Key: $API_KEY' -H 'Content-Type: application/json' -d \"\$(/usr/local/bin/linux-probe-payload)\" >/dev/null 2>&1"
+curl -fsS --connect-timeout 10 --max-time 30 -X POST "$SERVER/api/report" -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -d "$report" >/dev/null
+# --max-time 必须加：没有它，服务端只接受连接却不返回时 curl 会一直挂着，
+# 上一分钟的 cron 还没结束、下一分钟又起一个，进程会越堆越多。
+line="* * * * * $(command -v curl) -fsS --max-time 30 -X POST $SERVER/api/report -H 'X-API-Key: $API_KEY' -H 'Content-Type: application/json' -d \"\$(/usr/local/bin/linux-probe-payload)\" >/dev/null 2>&1"
 (crontab -l 2>/dev/null | grep -v 'linux-probe-payload' || true; printf '%s\n' "$line") | crontab -
 echo 'Linux Probe installed.'

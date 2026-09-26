@@ -14,10 +14,11 @@ real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 - **Hardware specs** — CPU cores, total memory, total disk capacity, cumulative traffic per node
 - **Network metrics** — real-time throughput (Mbps) + total upload/download (MB/GB/TB), plus a live canvas rate chart on every node card
 - **TCP ping** — CT (电信) / CU (联通) / CM (移动) latency badges with color coding (green ≤100ms / yellow ≤300ms / red >300ms) and packet-loss rate
-- **Ping history chart** — SVG area-gradient chart; server keeps **120 samples (~2 h)**, dashboard shows the latest 60 (~1 h)
+- **Ping history chart** — SVG area-gradient chart for CT/CU/CM latency **plus a packet-loss strip** sharing the same time axis; the whole dashboard switches between **1 h / 6 h / 12 h / 24 h** in one click, and the server keeps a full **24 h at 1-minute resolution**
 - **OS detection** — distro icon tinted with the same color as the label via CSS mask + `currentColor` (crisp in both themes)
+- **Region filter** — a tab bar above the grid groups nodes by country (flag + count); picking a region shows only that region's cards
 - **Floating nav panel** — node anchors with scroll-spy highlighting, mobile slide-out, back-to-top
-- **Encrypted data file** — SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
+- **Encrypted data file** — PBKDF2-HMAC-SHA256 key derivation + SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
 - **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login, ping-target injection guard, node & body size caps
 - **Admin console** — API key management (editable labels), node editing in a card grid with live online status, auto-refresh that never interrupts editing, admin username change, one-line client installer with copy button, three-carrier ping target configuration
 
@@ -81,11 +82,12 @@ Set `PROBE_TRUST_PROXY=true` and `PROBE_PUBLIC_URL=https://probe.yourdomain.com`
 | `PROBE_ADMIN_PASSWORD` | **required** | Admin password |
 | `PROBE_DATA_KEY` | **required** | Encryption key for `data.enc` (must differ from password) |
 | `PROBE_DATA_DIR` | project dir | Where `data.enc` is stored |
-| `PROBE_PUBLIC_URL` | from request | Public base URL for generated install scripts |
+| `PROBE_PUBLIC_URL` | from request | Public base URL for generated install scripts. Leave empty to derive it from the request `Host` header |
 | `PROBE_SESSION_TTL` | `43200` (12h) | Admin session lifetime in seconds |
 | `PROBE_OFFLINE_SECONDS` | `90` | Node shown offline after this many seconds without report |
 | `PROBE_MAX_NODES` | `200` | Max node count; protects storage from hostname-flooding |
-| `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for real client IPs |
+| `PROBE_PING_HISTORY` | `1440` | Ping samples kept per node (1/minute, so 1440 = 24 h). Lower it on memory- or storage-constrained hosts |
+| `PROBE_TRUST_PROXY` | unset | Trust `X-Forwarded-For`/`X-Real-IP` for real client IPs. **Only `1`/`true`/`yes`/`on` enable it** — `false`, `0` and an empty value all mean "off" |
 
 ## Client agent
 
@@ -97,7 +99,10 @@ Reports every minute via cron:
 - TCP ping to three configurable targets (CT/CU/CM)
 
 Country lookup caches result for 24 hours. OS info cached permanently.
-Ping latency history is kept for **120 samples (~2 hours)** server-side (`HISTORY_LIMIT`); the dashboard chart shows the latest 60 samples (~1 hour).
+Ping latency history is kept for **1440 samples (24 hours at 1-minute resolution)** server-side
+(`PROBE_PING_HISTORY`); the dashboard plots whatever the selected range needs (1 h / 6 h / 12 h / 24 h).
+`/api/nodes` downsamples the series to at most 240 points — always keeping samples where a carrier
+timed out — so the response size does not grow with the retained history.
 
 ## Admin console
 
@@ -140,10 +145,11 @@ Ping latency history is kept for **120 samples (~2 hours)** server-side (`HISTOR
 - Session cookies: `HttpOnly`, `SameSite=Strict`, `Secure` (when HTTPS)
 - Login rate-limited: 5 failures / 5 minutes per IP
 - Ping targets validated as `host:port` before being embedded in the agent script (blocks shell injection)
-- Node count and request body size capped (`PROBE_MAX_NODES`, 64 KB) to prevent resource exhaustion
+- Node count, request body size and **per-report field whitelist** capped (`PROBE_MAX_NODES`, 64 KB) to prevent resource exhaustion
 - Content-Security-Policy, X-Frame-Options, HSTS (on HTTPS), static file whitelist
-- Constant-time password comparison (`hmac.compare_digest`)
+- Constant-time password and API-key comparison (`hmac.compare_digest`)
 - `X-Forwarded-For` spoofing blocked by default (`PROBE_TRUST_PROXY`)
+- `data.enc` keys are stretched with PBKDF2 (600k iterations); legacy v1 files are read and upgraded to the v2 container on the next save
 
 ## Development
 

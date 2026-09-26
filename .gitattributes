@@ -1,0 +1,6 @@
+# 统一换行符。shell 脚本一旦以 CRLF 检出，Linux 上会直接报
+# "bad interpreter: /usr/bin/env bash^M"；agent.sh 还会被服务端读取、
+# 嵌入客户端安装命令，Dockerfile 也要在 Linux 下构建。
+* text=auto
+*.sh text eol=lf
+Dockerfile text eol=lf

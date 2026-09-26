@@ -3,6 +3,9 @@
 Boots server.py in a subprocess on a throwaway port and exercises the API
 with stdlib urllib only. Runs under both unittest and pytest.
 """
+import base64
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -18,8 +21,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def http(base, method, path, body=None, headers=None):
-    data = json.dumps(body).encode() if body is not None else None
+def http(base, method, path, body=None, headers=None, raw=None):
+    if raw is not None:
+        data = raw
+    else:
+        data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     for k, v in (headers or {}).items():
@@ -29,6 +35,70 @@ def http(base, method, path, body=None, headers=None):
             return resp.status, dict(resp.headers), resp.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
+
+
+def wait_for_health(base, proc, timeout=15.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"server exited early with code {proc.returncode}")
+        try:
+            if http(base, "GET", "/api/health")[0] == 200:
+                return
+        except OSError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("server failed to start")
+
+
+def start_server(app_dir, cwd, data_dir, port, **env_overrides):
+    """Start a server subprocess; the caller owns termination."""
+    env = dict(os.environ, PORT=str(port),
+               PROBE_ADMIN_PASSWORD="test-pass", PROBE_DATA_KEY="test-data-key",
+               PROBE_DATA_DIR=str(data_dir), PROBE_PUBLIC_URL="",
+               PROBE_MAX_NODES="50")
+    env.update(env_overrides)
+    proc = subprocess.Popen([sys.executable, str(Path(app_dir) / "server.py")],
+                            cwd=str(cwd), env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        wait_for_health(base, proc)
+    except RuntimeError:
+        proc.kill()
+        raise
+    return proc, base
+
+
+def copy_app(dst):
+    dst.mkdir(parents=True, exist_ok=True)
+    for name in ("server.py", "index.html", "app.js", "style.css", "agent.sh"):
+        shutil.copy(ROOT / name, dst / name)
+    return dst
+
+
+def admin_session(base):
+    """Log in and return headers carrying the session cookie and CSRF token."""
+    status, hdrs, raw = http(base, "POST", "/api/login",
+                             {"username": "admin", "password": "test-pass"})
+    assert status == 200, (status, raw)
+    cookie = hdrs["Set-Cookie"].split(";")[0]
+    return {"Cookie": cookie, "X-CSRF-Token": json.loads(raw)["csrf"]}
+
+
+def make_key(base, headers, label="k"):
+    status, _, raw = http(base, "POST", "/api/admin/keys", {"label": label}, headers)
+    assert status == 201, (status, raw)
+    return json.loads(raw)
+
+
+def shutdown(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
 
 
 class ServerTest(unittest.TestCase):
@@ -307,6 +377,194 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(status, 401)
         status, _, _ = self.login()  # even correct credentials are blocked now
         self.assertEqual(status, 429)
+
+
+class RegressionTest(unittest.TestCase):
+    """回归测试：每个用例对应一次代码审查中发现并修复的缺陷。
+
+    使用独立的服务器实例：故意让进程 CWD 与脚本目录不同，并显式设置
+    PROBE_TRUST_PROXY=false（而不是依赖"变量不存在"）。
+    """
+    PORT = 38093
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = copy_app(Path(tempfile.mkdtemp(prefix="pulse-app-")))
+        cls.cwd = Path(tempfile.mkdtemp(prefix="pulse-cwd-"))
+        cls.data = Path(tempfile.mkdtemp(prefix="pulse-data-"))
+        cls.proc, cls.base = start_server(cls.app, cls.cwd, cls.data, cls.PORT,
+                                         PROBE_TRUST_PROXY="false")
+        cls.admin = admin_session(cls.base)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutdown(cls.proc)
+        for d in (cls.app, cls.cwd, cls.data):
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_01_static_files_resolve_from_script_dir(self):
+        # 服务器进程的 CWD 是另一个目录；静态文件仍必须从 server.py 所在目录取。
+        status, _, raw = http(self.base, "GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"<html", raw)
+        self.assertEqual(http(self.base, "GET", "/app.js")[0], 200)
+        self.assertEqual(http(self.base, "GET", "/style.css")[0], 200)
+        # 白名单仍然生效
+        for path in ("/server.py", "/agent.sh", "/data.enc"):
+            self.assertEqual(http(self.base, "GET", path)[0], 404, path)
+
+    def test_02_non_dict_body_rejected_not_crashed(self):
+        # 数组/字符串/数字/布尔都曾被当成合法 body，随后 .get() 抛
+        # AttributeError，连接被直接断开且没有任何响应。
+        for raw in (b"[]", b'"abc"', b"1", b"true", b"[1,2]"):
+            status, _, _ = http(self.base, "POST", "/api/login", raw=raw)
+            self.assertEqual(status, 400, raw)
+        # 服务器还活着
+        self.assertEqual(http(self.base, "GET", "/api/health")[0], 200)
+
+    def test_03_explicit_false_disables_trust_proxy(self):
+        # PROBE_TRUST_PROXY="false" 曾被 bool() 读成 True，等于默认开启反代信任，
+        # 任何人都能伪造 X-Forwarded-For 绕过登录限流。
+        key = make_key(self.base, self.admin, "xff")["key"]
+        payload = {"hostname": "xff-node", "cpu": 1, "memory": 1, "disk": 1}
+        status, _, _ = http(self.base, "POST", "/api/report", payload,
+                            {"X-API-Key": key, "X-Forwarded-For": "203.0.113.7"})
+        self.assertEqual(status, 200)
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "xff-node"][0]
+        self.assertEqual(node["ip"], "127.0.*.*")  # TCP 对端，而不是伪造的头
+
+    def test_04_report_fields_are_whitelisted_and_clamped(self):
+        key = make_key(self.base, self.admin, "clean")["key"]
+        junk = "J" * 20000
+        payload = {"hostname": "clean-node", "cpu": 999, "memory": -5, "disk": 42,
+                   "network_rx": {"nested": junk}, "evil_extra_field": junk,
+                   "admin_user": "pwned"}
+        for _ in range(3):
+            status, _, _ = http(self.base, "POST", "/api/report", payload,
+                                {"X-API-Key": key})
+            self.assertEqual(status, 200)
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        self.assertLess(len(raw), 4096)  # 3×20KB 的上报不能撑大响应
+        node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "clean-node"][0]
+        self.assertNotIn("evil_extra_field", node)
+        self.assertNotIn("admin_user", node)
+        self.assertEqual(node["cpu"], 100)       # 百分比被夹到 [0,100]
+        self.assertEqual(node["memory"], 0)
+        self.assertEqual(node["disk"], 42)
+        self.assertEqual(node["network_rx"], 0)  # 嵌套 dict 归零
+        for sample in node["history"]:
+            self.assertIsInstance(sample["rx"], float)
+
+    def test_05_admin_node_edit_with_unhashable_id(self):
+        # {"id": []} 曾让 DATA["nodes"].get() 抛 TypeError，连接被断开。
+        status, _, raw = http(self.base, "POST", "/api/admin/nodes", {"id": []}, self.admin)
+        self.assertEqual(status, 404, raw)
+        status, _, raw = http(self.base, "POST", "/api/admin/nodes", {"id": {"a": 1}}, self.admin)
+        self.assertEqual(status, 404, raw)
+
+    def test_06_resource_id_with_query_string(self):
+        # 路径参数取自原始 self.path 时，"?x=1" 会被当成 id 的一部分而误报 404。
+        item = make_key(self.base, self.admin, "before")
+        status, _, raw = http(self.base, "POST", f"/api/admin/keys/{item['id']}?x=1",
+                              {"label": "after"}, self.admin)
+        self.assertEqual(status, 200, raw)
+        self.assertEqual(json.loads(raw)["label"], "after")
+        status, _, raw = http(self.base, "GET", "/api/admin/keys", headers=self.admin)
+        self.assertEqual([k["label"] for k in json.loads(raw)["keys"] if k["id"] == item["id"]],
+                         ["after"])
+
+    def test_07_ping_history_is_compacted_but_keeps_loss_events(self):
+        # 服务端保留 1 天 1 分钟粒度，但 /api/nodes 必须压到图表够用的点数，
+        # 同时**不能把偶发超时的采样点抽掉**——那正是这张图存在的意义。
+        key = make_key(self.base, self.admin, "ping")["key"]
+        total = 260
+        for i in range(total):
+            loss = -1 if i == 100 else 0
+            payload = {"hostname": "ping-node", "cpu": 1, "memory": 1, "disk": 1,
+                       "tcp_ping_ct": loss or 20, "tcp_ping_cu": loss or 30,
+                       "tcp_ping_cm": loss or 40}
+            status, _, _ = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+            self.assertEqual(status, 200, i)
+
+        status, _, raw = http(self.base, "GET", "/api/nodes")
+        node = [n for n in json.loads(raw)["nodes"] if n["hostname"] == "ping-node"][0]
+        self.assertLess(len(node["ping_history"]), total, "全天序列必须被压缩")
+        self.assertLessEqual(len(node["ping_history"]), 240)
+        self.assertLessEqual(len(node["history"]), 60)
+        self.assertTrue(any(s["cm"] < 0 for s in node["ping_history"]),
+                        "抽样不能把超时采样点抹掉")
+
+    def test_08_admin_node_list_omits_chart_history(self):
+        # 管理列表只用来改名/改国家码；带上历史会白白撑大响应。
+        status, _, raw = http(self.base, "GET", "/api/admin/nodes", headers=self.admin)
+        self.assertEqual(status, 200)
+        nodes = json.loads(raw)["nodes"]
+        self.assertTrue(nodes)
+        for n in nodes:
+            self.assertNotIn("history", n)
+            self.assertNotIn("ping_history", n)
+            self.assertIn("hostname", n)   # 管理界面需要的字段仍在
+
+
+class DataFileMigrationTest(unittest.TestCase):
+    """v1 容器（裸 SHA-256 密钥）必须能读，并在下一次保存时自动升级成 v2（PBKDF2）。"""
+    PORT = 38094
+    MAGIC = b"PULSEv2\n"
+
+    @staticmethod
+    def write_legacy_file(path, password, payload):
+        key = hashlib.sha256(password.encode()).digest()
+        nonce = b"\x01" * 16
+        data = json.dumps(payload, separators=(",", ":")).encode()
+        cipher = bytearray()
+        for offset in range(0, len(data), 32):
+            stream = hashlib.sha256(key + nonce + (offset // 32).to_bytes(8, "big")).digest()
+            cipher.extend(a ^ b for a, b in zip(data[offset:offset + 32], stream))
+        cipher = bytes(cipher)
+        tag = hmac.new(key, nonce + cipher, hashlib.sha256).digest()
+        path.write_bytes(base64.b64encode(nonce + tag + cipher))
+
+    def test_legacy_file_is_read_then_upgraded(self):
+        app = copy_app(Path(tempfile.mkdtemp(prefix="pulse-app-")))
+        cwd = Path(tempfile.mkdtemp(prefix="pulse-cwd-"))
+        data = Path(tempfile.mkdtemp(prefix="pulse-data-"))
+        self.addCleanup(shutil.rmtree, app, True)
+        self.addCleanup(shutil.rmtree, cwd, True)
+        self.addCleanup(shutil.rmtree, data, True)
+
+        node = {"id": "legacy01", "hostname": "legacy-node", "name": "legacy",
+                "country": "CN", "cpu": 7, "memory": 8, "disk": 9, "ip": "10.0.0.1",
+                "updated": time.time(), "history": [], "ping_history": []}
+        payload = {"keys": [], "nodes": {"legacy01": node},
+                   "blocked_nodes": [], "settings": {}, "revoked_keys": []}
+        data_file = data / "data.enc"
+        self.write_legacy_file(data_file, "test-data-key", payload)
+        self.assertFalse(base64.b64decode(data_file.read_bytes()).startswith(self.MAGIC),
+                         "precondition: the seeded file must be in the v1 layout")
+
+        proc, base = start_server(app, cwd, data, self.PORT)
+        try:
+            _, _, raw = http(base, "GET", "/api/nodes")
+            nodes = json.loads(raw)["nodes"]
+            self.assertEqual([n["hostname"] for n in nodes], ["legacy-node"])
+            # 任何管理员写操作都会走 save_data(force=True)
+            make_key(base, admin_session(base), "upgrade")
+        finally:
+            shutdown(proc)  # SIGTERM 触发 flush
+
+        self.assertTrue(base64.b64decode(data_file.read_bytes()).startswith(self.MAGIC),
+                        "saving must rewrite the file in the v2 container")
+
+        # 重启后仍能读回同一份数据（证明 v2 容器自洽）
+        proc, base = start_server(app, cwd, data, self.PORT)
+        try:
+            _, _, raw = http(base, "GET", "/api/nodes")
+            self.assertEqual([n["hostname"] for n in json.loads(raw)["nodes"]], ["legacy-node"])
+            _, _, raw = http(base, "GET", "/api/admin/keys", headers=admin_session(base))
+            self.assertEqual([k["label"] for k in json.loads(raw)["keys"]], ["upgrade"])
+        finally:
+            shutdown(proc)
 
 
 if __name__ == "__main__":

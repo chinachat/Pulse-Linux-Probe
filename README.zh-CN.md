@@ -11,8 +11,9 @@
 - **硬件信息** — CPU 核心数、总内存、磁盘容量、累计上传/下载流量
 - **网络指标** — 实时速率（Mbps）+ 累计流量（MB/GB/TB），每张节点卡内置 canvas 实时速率图
 - **TCP Ping** — CT 电信 / CU 联通 / CM 移动三网延迟徽章（绿 ≤100ms / 黄 ≤300ms / 红 >300ms）+ 丢包率
-- **Ping 历史图** — SVG 面积渐变图；服务端保留 **120 采样（约 2 小时）**，仪表盘显示最近 60 采样（约 1 小时）
+- **Ping 历史图** — SVG 面积渐变图展示 CT/CU/CM 延迟，**下方附带共用时间轴的丢包条**；整页可在 **1 小时 / 6 小时 / 12 小时 / 24 小时** 之间一键切换，服务端完整保留 **24 小时（1 分钟粒度）**
 - **OS 识别** — 发行版图标经 CSS mask + currentColor 与标签同色渲染，深浅主题下均清晰
+- **地区筛选** — 卡片上方的地区标签栏按国家分组（国旗 + 数量），点击某个地区只显示该地区的卡片
 - **浮动导航** — 节点锚点、滚动高亮、移动端滑出、回到顶部
 - **数据加密** — SHA-256 密钥流 + HMAC 校验，原子写入，高频写入防抖
 - **安全加固** — CSRF 保护、强制密码+密钥、非 root 容器、CSP/HSTS 头、登录限流、Ping 目标注入防护、节点/请求体上限
@@ -77,11 +78,12 @@ server {
 | `PROBE_ADMIN_PASSWORD` | **必填** | 管理员密码 |
 | `PROBE_DATA_KEY` | **必填** | 数据加密密钥（须与密码不同） |
 | `PROBE_DATA_DIR` | 项目目录 | `data.enc` 存储位置 |
-| `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装脚本的外部访问地址 |
+| `PROBE_PUBLIC_URL` | 由请求推断 | 生成安装脚本的外部访问地址；留空则按请求的 Host 头推导 |
 | `PROBE_SESSION_TTL` | `43200`（12h） | 管理员会话有效期（秒） |
 | `PROBE_OFFLINE_SECONDS` | `90` | 超时未上报则显示离线 |
 | `PROBE_MAX_NODES` | `200` | 节点数上限（防止持钥者刷 hostname 耗尽存储） |
-| `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For 获取真实 IP |
+| `PROBE_PING_HISTORY` | `1440` | 每节点保留的延迟采样数（1 分钟一个，1440 = 24 小时）。内存/存储紧张时可调小 |
+| `PROBE_TRUST_PROXY` | 未设置 | 信任 X-Forwarded-For 获取真实 IP。**只有 `1`/`true`/`yes`/`on` 算开启**，`false`、`0`、空值一律视为关闭 |
 
 ## 客户端说明
 
@@ -93,7 +95,9 @@ server {
 - 三个 TCP Ping 目标延迟（电信/联通/移动）
 
 国家代码缓存 24 小时，OS 信息永久缓存。
-三网延迟历史在服务端保留 **120 采样（约 2 小时）**（`HISTORY_LIMIT`），仪表盘图表显示最近 60 采样（约 1 小时）。
+三网延迟历史在服务端保留 **1440 采样（24 小时，1 分钟粒度）**（`PROBE_PING_HISTORY`）；仪表盘按所选区间
+（1 小时 / 6 小时 / 12 小时 / 24 小时）绘制。`/api/nodes` 会把序列压缩到最多 240 个点——
+**超时的采样点始终保留**——所以响应体不会随保留时长增长。
 
 ## 管理后台
 
@@ -136,10 +140,11 @@ server {
 - Session Cookie：`HttpOnly`、`SameSite=Strict`、HTTPS 下 `Secure`
 - 登录限流：每 IP 5 次失败 / 5 分钟
 - Ping 目标仅接受 `host:port` 格式，嵌入客户端脚本前强制校验（阻断命令注入）
-- 节点数与请求体大小上限（`PROBE_MAX_NODES`、64KB），防资源耗尽
+- 节点数、请求体大小与**上报字段白名单**上限（`PROBE_MAX_NODES`、64KB），防资源耗尽
 - Content-Security-Policy、X-Frame-Options、HSTS（HTTPS）、静态文件白名单
-- 常量时间密码比较（`hmac.compare_digest`）
+- 常量时间的密码与 API Key 比较（`hmac.compare_digest`）
 - 默认不信任 `X-Forwarded-For`（`PROBE_TRUST_PROXY` 关闭时不可伪造 IP）
+- `data.enc` 密钥经 PBKDF2（60 万次迭代）拉伸；旧的 v1 文件可读，并在下次保存时自动升级为 v2 容器
 
 ## 开发
 
