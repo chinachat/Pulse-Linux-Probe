@@ -71,6 +71,69 @@ DETAIL_POINTS = 300
 DETAIL_KEEP_RECENT = 60
 DETAIL_MAX_RANGE = 86400
 NODE_ID_RE = re.compile(r"^[0-9a-f]{6,64}$")
+# 事件派生阈值（可在后台改，存在 DATA["settings"]["thresholds"]）。
+# (键, 默认值, 最小, 最大, 单位/说明)
+EVENT_THRESHOLDS = (
+    ("cpu", 90, 10, 100, "CPU 使用率"),
+    ("memory", 90, 10, 100, "内存使用率"),
+    ("disk", 90, 10, 100, "磁盘使用率"),
+    ("iowait", 60, 1, 100, "iowait 占比"),
+    ("loss", 50, 5, 100, "单点丢包率"),
+    ("ping_ms", 500, 50, 60000, "延迟"),
+)
+THRESHOLD_KEYS = {k: (lo, hi) for k, _d, lo, hi, _u in EVENT_THRESHOLDS}
+EVENT_CONSECUTIVE = 3        # 连续多少个采样点越线才算一次事件
+EVENT_OFFLINE_GAP = 150      # 相邻采样间隔超过这个秒数即视为一段离线
+EVENT_MAX = 200              # 事件列表上限
+# 按接口快照：最多几个网卡（只存当前值，不进历史）
+IFACE_LIMIT = 8
+CARRIER_NAMES = {"ct": "电信", "cu": "联通", "cm": "移动"}
+
+def default_thresholds():
+    return {k: d for k, d, _lo, _hi, _u in EVENT_THRESHOLDS}
+
+def threshold_meta():
+    """给后台界面用的阈值元信息，避免前端再抄一份取值范围。"""
+    return [{"key": k, "label": u, "default": d, "min": lo, "max": hi}
+            for k, d, lo, hi, u in EVENT_THRESHOLDS]
+
+def clean_thresholds(raw):
+    """把前端传来的阈值字典校验成合法数值；非法项回落默认值。"""
+    out = default_thresholds()
+    if not isinstance(raw, dict):
+        return out
+    for key, (lo, hi) in THRESHOLD_KEYS.items():
+        if key not in raw:
+            continue
+        try:
+            v = float(raw[key])
+        except (TypeError, ValueError):
+            continue
+        if v != v:      # NaN
+            continue
+        out[key] = int(min(max(v, lo), hi))
+    return out
+
+def sanitize_ifaces(raw):
+    """按接口快照：只重建已知字段，绝不把客户端给的 dict 原样收下。
+
+    和 sanitize_report 同一套思路——网卡名过白名单、数值钳制、条数封顶。
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:IFACE_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        name = re.sub(r"[^A-Za-z0-9._:@-]", "", str(item.get("name", "")))[:16]
+        if not name:
+            continue
+        out.append({"name": name,
+                    "rx": clamp_num(item.get("rx"), 0.0, 1e15),
+                    "tx": clamp_num(item.get("tx"), 0.0, 1e15),
+                    "err": clamp_num(item.get("err"), 0.0, 1e9),
+                    "drop": clamp_num(item.get("drop"), 0.0, 1e9)})
+    return out
 
 def valid_ping_target(value):
     if not value:
@@ -274,6 +337,8 @@ def sanitize_report(body):
     clean["hostname"] = clean["hostname"] or "unknown"
     # 国家码只保留字母，前端还有一次正则校验（双保险，避免拼进 innerHTML）
     clean["country"] = re.sub(r"[^A-Za-z]", "", str(body.get("country", "")))[:2].upper()
+    # 按接口快照是唯一的"列表型"字段，单独按白名单重建（见 sanitize_ifaces）
+    clean["ifaces"] = sanitize_ifaces(body.get("ifaces"))
     return clean
 
 def prune_sessions():
@@ -338,6 +403,79 @@ def trim_window(series, since):
         return []
     win = [s for s in series if (s.get("time") or 0) >= since]
     return win if win else series[-1:]
+
+def _sustained_events(samples, key, threshold, kind, label, events):
+    """连续 EVENT_CONSECUTIVE 个采样越线才算一次事件。
+
+    只在"刚越线"的那一刻报一条，恢复前不再重复，否则一天能刷出上千条。
+    传入的必须是 1 分钟粒度的原始序列，否则"连续 N 分钟"会算错。
+    """
+    run, peak, start = 0, 0.0, 0
+    for s in samples:
+        v = clamp_num(s.get(key), -1e15, 1e15)
+        if v >= threshold:
+            if run == 0:
+                start, peak = s.get("time", 0), v
+            run += 1
+            peak = max(peak, v)
+            continue
+        if run >= EVENT_CONSECUTIVE:
+            events.append({"time": start, "level": "error" if peak >= 97 else "warn",
+                           "kind": kind,
+                           "text": f"{label}持续 {round(peak)}%"
+                                   f"（≥{round(threshold)}%，连续 {run} 分钟）"})
+        run = 0
+    if run >= EVENT_CONSECUTIVE:
+        events.append({"time": start, "level": "error" if peak >= 97 else "warn",
+                       "kind": kind,
+                       "text": f"{label}持续 {round(peak)}%"
+                               f"（≥{round(threshold)}%，连续 {run} 分钟）"})
+    return events
+
+def derive_events(load_series, ping_series, thresholds):
+    """从已存的时间序列按需派生事件日志——不落盘、不额外占存储。"""
+    th = clean_thresholds(thresholds)
+    events = []
+    for key, kind, label in (("cpu", "cpu", "CPU 使用率"),
+                             ("memory", "memory", "内存使用率"),
+                             ("disk", "disk", "磁盘使用率"),
+                             ("iowait", "iowait", "iowait")):
+        _sustained_events(load_series, key, th[key], kind, label, events)
+
+    # 上报缺口 = 这段时间节点没上报（离线/重启/网络中断）
+    for prev, cur in zip(load_series, load_series[1:]):
+        gap = (cur.get("time") or 0) - (prev.get("time") or 0)
+        if gap > EVENT_OFFLINE_GAP:
+            events.append({"time": prev.get("time", 0), "level": "info", "kind": "offline",
+                           "text": f"节点离线约 {round(gap / 60)} 分钟"
+                                   f"（{clock(prev.get('time'))} → {clock(cur.get('time'))}）"})
+
+    for s in ping_series:
+        t = s.get("time", 0)
+        metrics = [(k, clamp_num(s.get(k), -1.0, 1e6)) for k in ("ct", "cu", "cm")]
+        configured = [(k, v) for k, v in metrics if v != 0]
+        if not configured:
+            continue
+        lost = [k for k, v in configured if v < 0]
+        ratio = len(lost) / len(configured) * 100
+        if lost:
+            events.append({"time": t, "level": "warn", "kind": "ping_timeout",
+                           "text": "/".join(CARRIER_NAMES.get(k, k) for k in lost) + " 连接超时"})
+        if ratio >= th["loss"] and len(configured) > 1:
+            events.append({"time": t, "level": "warn", "kind": "ping_loss",
+                           "text": f"丢包率 {round(ratio)}%（≥{th['loss']}%）"})
+        slow = [(k, v) for k, v in configured if v > th["ping_ms"]]
+        if slow:
+            worst = max(slow, key=lambda kv: kv[1])
+            events.append({"time": t, "level": "warn", "kind": "ping_slow",
+                           "text": f"{CARRIER_NAMES.get(worst[0], worst[0])} 延迟 {round(worst[1])}ms"
+                                   f"（≥{th['ping_ms']}ms）"})
+
+    events.sort(key=lambda e: e.get("time", 0), reverse=True)
+    return events[:EVENT_MAX]
+
+def clock(ts):
+    return time.strftime("%m-%d %H:%M", time.localtime(clamp_num(ts, 0, 4e9)))
 
 class App(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -444,16 +582,22 @@ class App(SimpleHTTPRequestHandler):
             node = dict(node)
         now = time.time()
         since = now - window
-        load_win = trim_window(node.get("history", []), since)
-        ping_win = trim_window(node.get("ping_history", []), since)
+        # 事件必须用**原始 1 分钟粒度**序列派生，"连续 N 分钟"才算得准；
+        # 下发时再降采样。两者不要混，否则抽样后每个点代表好几分钟，措辞就错了。
+        raw_load = trim_window(node.get("history", []), since)
+        raw_ping = trim_window(node.get("ping_history", []), since)
         detail = {k: v for k, v in node.items() if k not in ("history", "ping_history")}
         detail["ip"] = mask_ip(node.get("ip"))
         detail["online"] = now - node.get("updated", 0) < OFFLINE_SECONDS
+        with LOCK:
+            thresholds = clean_thresholds(DATA["settings"].get("thresholds"))
         return self.send_json({
             "node": detail,
             "range": window,
-            "history": downsample_even(load_win, DETAIL_POINTS),
-            "ping_history": compact_ping_history(ping_win, DETAIL_POINTS, DETAIL_KEEP_RECENT),
+            "thresholds": thresholds,
+            "history": downsample_even(raw_load, DETAIL_POINTS),
+            "ping_history": compact_ping_history(raw_ping, DETAIL_POINTS, DETAIL_KEEP_RECENT),
+            "events": derive_events(raw_load, raw_ping, thresholds),
         })
 
     def do_GET(self):
@@ -503,6 +647,8 @@ class App(SimpleHTTPRequestHandler):
         if path == "/api/admin/settings":
             if self.require_admin(): self.send_json({"admin_user": admin_user(),
                 "csrf": csrf_token(self.session_token()),
+                "thresholds": clean_thresholds(DATA["settings"].get("thresholds")),
+                "threshold_meta": threshold_meta(),
                 "ping_ct": DATA["settings"].get("ping_ct", ""), "ping_cu": DATA["settings"].get("ping_cu", ""), "ping_cm": DATA["settings"].get("ping_cm", "")})
             return
         if path == "/api/install.sh":
@@ -663,9 +809,14 @@ class App(SimpleHTTPRequestHandler):
                 if "admin_user" in body: DATA["settings"]["admin_user"] = name
                 for k in ("ping_ct", "ping_cu", "ping_cm"):
                     if k in body: DATA["settings"][k] = str(body.get(k, "")).strip()[:120]
+                if "thresholds" in body:
+                    # 只接受已知键，逐项夹到合法区间；非法项回落默认值
+                    DATA["settings"]["thresholds"] = clean_thresholds(body.get("thresholds"))
                 save_data(force=True)
             log.info("admin settings updated")
             return self.send_json({"ok": True, "admin_user": admin_user(),
+                "thresholds": clean_thresholds(DATA["settings"].get("thresholds")),
+                "threshold_meta": threshold_meta(),
                 "ping_ct": DATA["settings"].get("ping_ct", ""), "ping_cu": DATA["settings"].get("ping_cu", ""), "ping_cm": DATA["settings"].get("ping_cm", "")})
         return self.send_json({"error": "not found"}, 404)
 

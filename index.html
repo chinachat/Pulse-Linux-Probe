@@ -62,6 +62,8 @@
         <button type="button" data-range="43200">12&#23567;&#26102;</button>
         <button type="button" data-range="86400" class="active">24&#23567;&#26102;</button>
       </div>
+      <button id="detail-csv" class="ghost">&#23548;&#20986; CSV</button>
+      <button id="detail-share" class="ghost">&#20998;&#20139;</button>
       <button id="detail-back" class="ghost">&#36820;&#22238;&#20202;&#34920;&#30424;</button>
     </div>
   </section>
@@ -104,6 +106,10 @@
     <div class="net-panel">
       <canvas class="net-canvas detail-net" height="120"></canvas>
     </div>
+    <div class="iface-wrap">
+      <div class="chart-head"><span>&#25353;&#25509;&#21475;</span><em class="chart-hint">&#32047;&#35745;&#25910;&#21457; / &#38169;&#35823; / &#20002;&#21253;</em></div>
+      <div id="detail-ifaces"></div>
+    </div>
   </section>
 
   <section class="panel">
@@ -118,6 +124,21 @@
       <svg class="loss-svg" viewBox="0 0 600 20" preserveAspectRatio="none"></svg>
       <b class="loss-val">&#8212;</b>
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>&#20107;&#20214;&#26085;&#24535;</h2>
+    <p class="hint">&#25353;&#24403;&#21069;&#21306;&#38388;&#20174;&#21382;&#21490;&#25353;&#38656;&#25512;&#23548;&#65292;&#19981;&#39069;&#22806;&#21344;&#23384;&#20648;&#12290;&#38408;&#20540;&#21487;&#22312;&#21518;&#21488;&#35843;&#25972;&#12290;</p>
+    <div id="detail-events" class="event-list"></div>
+  </section>
+
+  <section class="panel">
+    <div class="chart-head">
+      <h2>&#37319;&#26679;&#26126;&#32454;</h2>
+      <span class="chart-hint" id="detail-table-hint"></span>
+    </div>
+    <div id="detail-table" class="table-wrap"></div>
+    <div id="detail-pager" class="table-pager"></div>
   </section>
 </main>
 
@@ -180,6 +201,13 @@
         <button id="save-user">&#20445;&#23384;</button>
       </div>
       <p class="hint">&#20462;&#25913;&#21518;&#19979;&#27425;&#30331;&#24405;&#38656;&#20351;&#29992;&#26032;&#29992;&#25143;&#21517;&#12290;&#21021;&#22987;&#40664;&#35748;&#20540;&#30001;&#29615;&#22659;&#21464;&#37327; PROBE_ADMIN_USER &#20915;&#23450;&#12290;</p>
+    </div>
+
+    <div class="panel">
+      <h2>&#21578;&#35686;&#38408;&#20540;</h2>
+      <p class="hint">&#36830;&#32493; 3 &#20998;&#38047;&#36234;&#32447;&#25165;&#35760;&#19968;&#26465;&#20107;&#20214;&#12290;&#38750;&#27861;&#20540;&#20250;&#22238;&#33853;&#40664;&#35748;&#12290;</p>
+      <div class="th-grid" id="th-grid"></div>
+      <button id="save-th" class="primary">&#20445;&#23384;&#38408;&#20540;</button>
     </div>
 
     <div class="panel">

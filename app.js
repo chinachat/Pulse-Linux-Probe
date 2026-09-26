@@ -559,10 +559,43 @@ $('#back').onclick = () => {
 /* ---------- 单节点详情页 ---------- */
 const DETAIL_POLL_MS = 5000;
 const DETAIL_DEFAULT_RANGE = 86400;
+const DETAIL_TABLE_PAGE = 25;
+const DETAIL_CACHE_MS = 120000;   // 缓存 2 分钟：够"来回切区间"用，又不会显示太旧的数据
 let _detailId = null;
 let _detailData = null;
 let _detailRange = DETAIL_DEFAULT_RANGE;
 let _detailTimer = null;
+let _detailShownKey = null;       // 当前已渲染的 id:range，用来决定是否先用缓存顶一下
+let _detailPage = 0;
+let _detailRows = [];             // 合并后的采样明细（时间倒序）
+const _detailCache = new Map();
+
+function cacheKey(id, range) { return id + ':' + range; }
+
+function cacheGet(id, range) {
+  const key = cacheKey(id, range);
+  const hit = _detailCache.get(key);
+  if (hit && Date.now() - hit.ts < DETAIL_CACHE_MS) return hit.data;
+  try {
+    const raw = sessionStorage.getItem('probe-detail:' + key);
+    if (raw) {
+      const stored = JSON.parse(raw);
+      if (stored && Date.now() - stored.ts < DETAIL_CACHE_MS) {
+        _detailCache.set(key, stored);
+        return stored.data;
+      }
+    }
+  } catch (_) { /* sessionStorage 不可用就当没有缓存 */ }
+  return null;
+}
+
+function cachePut(id, range, data) {
+  const entry = { data, ts: Date.now() };
+  _detailCache.set(cacheKey(id, range), entry);
+  try {
+    sessionStorage.setItem('probe-detail:' + cacheKey(id, range), JSON.stringify(entry));
+  } catch (_) { /* 超配额/隐私模式：内存缓存仍然有效 */ }
+}
 
 function ago(ts) {
   const d = Math.max(0, Date.now() / 1000 - (Number(ts) || 0));
@@ -583,11 +616,14 @@ function openDetail(id) {
   if (_detailId !== id) {
     _detailId = id;
     _detailData = null;
-    $('#detail-head').innerHTML = '';
-    $('#detail-spec').innerHTML = '';
-    $('#detail-bars').innerHTML = '';
-    $('#detail-net-stats').innerHTML = '';
-    $('#detail-ping-row').innerHTML = '';
+    _detailShownKey = null;
+    _detailPage = 0;
+    _detailRows = [];
+    ['#detail-head', '#detail-spec', '#detail-bars', '#detail-net-stats', '#detail-ping-row',
+     '#detail-events', '#detail-table', '#detail-pager', '#detail-ifaces'].forEach(sel => {
+      const el = $(sel);
+      if (el) { el.innerHTML = ''; el.hidden = false; }
+    });
     $('#detail-title').textContent = '加载中…';
   }
   $('#dashboard').hidden = true;
@@ -602,6 +638,7 @@ function openDetail(id) {
 function closeDetail() {
   _detailId = null;
   _detailData = null;
+  _detailShownKey = null;
   stopDetailPolling();
   $('#node-detail').hidden = true;
   // 后台面板如果开着，就别把仪表盘也显示出来
@@ -619,11 +656,19 @@ function stopDetailPolling() {
 }
 
 async function loadDetail() {
-  const id = _detailId;
+  const id = _detailId, range = _detailRange;
   if (!id) return;
+  // 先用缓存顶一下（切区间/重开该节点时几乎瞬开），随后仍会拉最新数据
+  const key = cacheKey(id, range);
+  if (_detailShownKey !== key) {
+    const cached = cacheGet(id, range);
+    if (cached) { _detailShownKey = key; _detailData = cached; renderDetail(cached); }
+  }
   try {
-    const data = await api(`/api/nodes/${encodeURIComponent(id)}?range=${_detailRange}`);
-    if (_detailId !== id) return;   // 期间已经切走/关闭，别用旧响应覆盖新页面
+    const data = await api(`/api/nodes/${encodeURIComponent(id)}?range=${range}`);
+    if (_detailId !== id || _detailRange !== range) return;   // 期间已切走，别用旧响应覆盖
+    cachePut(id, range, data);
+    _detailShownKey = key;
     _detailData = data;
     renderDetail(data);
   } catch (e) {
@@ -643,7 +688,10 @@ function renderDetail(data) {
   renderDetailSpec(n);
   renderDetailLoad(data);
   renderDetailNet(n, data.history || []);
+  renderDetailIfaces(n);
   renderDetailPing(data.ping_history || [], n);
+  renderDetailEvents(data.events || []);
+  renderDetailTable(data);
 }
 
 function renderDetailHead(n) {
@@ -841,8 +889,191 @@ function renderDetailPing(samples, n) {
   });
 }
 
-/* 路由：只有 #/node/<id> 一种，其余一律回列表 */
-function route() {
+/* ---------- 事件日志 ---------- */
+const EVENT_LEVELS = { error: '严重', warn: '警告', info: '信息' };
+const EVENT_KINDS = {
+  cpu: 'CPU', memory: '内存', disk: '磁盘', iowait: 'iowait',
+  offline: '离线', ping_timeout: '超时', ping_loss: '丢包', ping_slow: '延迟',
+};
+
+function renderDetailEvents(events) {
+  const box = $('#detail-events');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!events.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = '当前区间内没有触发任何阈值或异常。';
+    box.append(p);
+    return;
+  }
+  events.forEach(e => {
+    const row = document.createElement('div');
+    row.className = 'event ev-' + (EVENT_LEVELS[e.level] ? e.level : 'info');
+    const t = document.createElement('em');
+    t.textContent = clock(e.time);
+    const kind = document.createElement('span');
+    kind.className = 'ev-kind';
+    kind.textContent = EVENT_KINDS[e.kind] || e.kind || '事件';
+    const text = document.createElement('b');
+    text.textContent = e.text || '';
+    row.append(t, kind, text);
+    box.append(row);
+  });
+}
+
+/* ---------- 按接口快照 ---------- */
+function renderDetailIfaces(n) {
+  const box = $('#detail-ifaces');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = Array.isArray(n.ifaces) ? n.ifaces : [];
+  if (!list.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const table = document.createElement('table');
+  table.className = 'mini-table';
+  const head = document.createElement('tr');
+  ['接口', '累计接收', '累计发送', '错误', '丢包'].forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    head.append(th);
+  });
+  table.append(head);
+  list.forEach(it => {
+    const tr = document.createElement('tr');
+    const cells = [it.name, bytes(it.rx), bytes(it.tx),
+                   String(Number(it.err) || 0), String(Number(it.drop) || 0)];
+    cells.forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      if (i >= 3 && Number(v) > 0) td.className = 'bad';
+      tr.append(td);
+    });
+    table.append(tr);
+  });
+  box.append(table);
+}
+
+/* ---------- 采样明细（时间倒序 + 分页） ---------- */
+function buildRows(data) {
+  // 负载和延迟来自同一次上报，时间戳一致；按时间合并成一张表
+  const byTime = new Map();
+  (data.history || []).forEach(s => {
+    byTime.set(s.time, { time: s.time, cpu: s.cpu, memory: s.memory, disk: s.disk,
+                         rx: s.rx, tx: s.tx, load1: s.load1 });
+  });
+  (data.ping_history || []).forEach(s => {
+    const row = byTime.get(s.time) || { time: s.time };
+    row.ct = s.ct; row.cu = s.cu; row.cm = s.cm;
+    byTime.set(s.time, row);
+  });
+  return [...byTime.values()].sort((a, b) => (b.time || 0) - (a.time || 0));
+}
+
+const fmtMs = v => {
+  const n = Number(v) || 0;
+  return n < 0 ? '超时' : n > 0 ? n + 'ms' : '—';
+};
+
+function renderDetailTable(data) {
+  _detailRows = buildRows(data);
+  const hint = $('#detail-table-hint');
+  if (hint) hint.textContent = `${_detailRows.length} 个采样点 · ${PING_RANGE_LABELS[_detailRange] || ''}`;
+  renderDetailPage();
+}
+
+function renderDetailPage() {
+  const box = $('#detail-table'), pager = $('#detail-pager');
+  if (!box || !pager) return;
+  box.innerHTML = '';
+  pager.innerHTML = '';
+  if (!_detailRows.length) {
+    const p = document.createElement('p');
+    p.className = 'hint';
+    p.textContent = '当前区间没有采样数据。';
+    box.append(p);
+    return;
+  }
+  const pages = Math.ceil(_detailRows.length / DETAIL_TABLE_PAGE);
+  _detailPage = Math.min(Math.max(_detailPage, 0), pages - 1);
+  const slice = _detailRows.slice(_detailPage * DETAIL_TABLE_PAGE,
+                                  (_detailPage + 1) * DETAIL_TABLE_PAGE);
+
+  const table = document.createElement('table');
+  table.className = 'mini-table data-table';
+  const head = document.createElement('tr');
+  ['时间', 'CPU', '内存', '磁盘', '下载', '上传', '负载', '电信', '联通', '移动']
+    .forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h;
+      head.append(th);
+    });
+  table.append(head);
+  slice.forEach(r => {
+    const tr = document.createElement('tr');
+    const cells = [
+      clock(r.time),
+      r.cpu == null ? '—' : Math.round(r.cpu) + '%',
+      r.memory == null ? '—' : Math.round(r.memory) + '%',
+      r.disk == null ? '—' : Math.round(r.disk) + '%',
+      r.rx == null ? '—' : mbpsNum(r.rx),
+      r.tx == null ? '—' : mbpsNum(r.tx),
+      r.load1 == null ? '—' : Number(r.load1).toFixed(2),
+      fmtMs(r.ct), fmtMs(r.cu), fmtMs(r.cm),
+    ];
+    cells.forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      if (i >= 7 && v === '超时') td.className = 'bad';
+      tr.append(td);
+    });
+    table.append(tr);
+  });
+  box.append(table);
+
+  const prev = document.createElement('button');
+  prev.textContent = '上一页';
+  prev.disabled = _detailPage === 0;
+  prev.onclick = () => { _detailPage--; renderDetailPage(); };
+  const info = document.createElement('span');
+  info.textContent = `第 ${_detailPage + 1} / ${pages} 页`;
+  const next = document.createElement('button');
+  next.textContent = '下一页';
+  next.disabled = _detailPage >= pages - 1;
+  next.onclick = () => { _detailPage++; renderDetailPage(); };
+  pager.append(prev, info, next);
+}
+
+/* ---------- 导出 CSV ---------- */
+function detailCsv(data) {
+  const cols = ['time', 'cpu', 'memory', 'disk', 'rx_bps', 'tx_bps', 'load1',
+                'mem_cached', 'swap_used', 'ping_ct_ms', 'ping_cu_ms', 'ping_cm_ms'];
+  // 时间戳转成本地可读时间，方便直接丢进表格软件
+  const cell = v => v == null || v === '' ? '' : String(v);
+  const lines = [cols.join(',')];
+  buildRows(data).sort((a, b) => (a.time || 0) - (b.time || 0)).forEach(r => {
+    lines.push([new Date((Number(r.time) || 0) * 1000).toISOString(),
+                cell(r.cpu), cell(r.memory), cell(r.disk), cell(r.rx), cell(r.tx),
+                cell(r.load1), cell(r.mem_cached), cell(r.swap_used),
+                cell(r.ct), cell(r.cu), cell(r.cm)].join(','));
+  });
+  return lines.join('\n');
+}
+
+function downloadCsv(name, text) {
+  const blob = new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* 路由：只有 #/node/<id> 一种，其余一律回列表 */function route() {
   const m = /^#\/node\/([0-9a-fA-F]{6,64})$/.exec(location.hash || '');
   if (m) openDetail(m[1]);
   else closeDetail();
@@ -850,6 +1081,32 @@ function route() {
 window.addEventListener('hashchange', route);
 
 $('#detail-back').onclick = () => { location.hash = ''; };
+
+$('#detail-csv').onclick = () => {
+  if (!_detailData) return;
+  const n = _detailData.node || {};
+  const id = (_detailId || 'node').slice(0, 8);
+  downloadCsv(`probe-${id}-${_detailRange}s.csv`, detailCsv(_detailData));
+};
+
+$('#detail-share').onclick = async () => {
+  const btn = $('#detail-share');
+  const url = (typeof location !== 'undefined' && String(location.href || '')
+    .replace(/#.*$/, '') || '') + '#/node/' + (_detailId || '');
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (_) { /* 复制不了就算了，链接已在地址栏 */ }
+    document.body.removeChild(ta);
+  }
+  btn.textContent = '已复制';
+  setTimeout(() => { btn.textContent = '分享'; }, 2000);
+};
+
 document.querySelectorAll('#detail-range button').forEach(btn => {
   btn.onclick = () => {
     const range = Number(btn.dataset.range) || DETAIL_DEFAULT_RANGE;
@@ -1053,7 +1310,48 @@ function renderBlocked(blocked) {
 function renderSettings(s) {
   const u = $('#admin-user'); if (u && document.activeElement !== u) u.value = s.admin_user || '';
   ['ct', 'cu', 'cm'].forEach(k => { const el = $('#ping-' + k); if (el && document.activeElement !== el) el.value = s['ping_' + k] || ''; });
+  renderThresholds(s.threshold_meta || [], s.thresholds || {});
 }
+
+/* ---------- 后台：告警阈值 ---------- */
+function renderThresholds(meta, values) {
+  const box = $('#th-grid');
+  if (!box) return;
+  // 元信息来自服务端，前端不抄一份取值范围；正在编辑的输入框不动
+  const editing = box.contains && box.contains(document.activeElement);
+  if (editing) return;
+  box.innerHTML = '';
+  meta.forEach(m => {
+    const wrap = document.createElement('label');
+    wrap.className = 'th-item';
+    const name = document.createElement('span');
+    name.textContent = m.label;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = 'th-' + m.key;
+    input.min = String(m.min);
+    input.max = String(m.max);
+    input.value = String(values[m.key] != null ? values[m.key] : m.default);
+    input.title = `${m.min} ~ ${m.max}（默认 ${m.default}）`;
+    wrap.append(name, input);
+    box.append(wrap);
+  });
+}
+
+$('#save-th').onclick = async () => {
+  const box = $('#th-grid');
+  const thresholds = {};
+  box.querySelectorAll('input').forEach(inp => {
+    const key = inp.id.replace(/^th-/, '');
+    const v = Number(inp.value);
+    if (Number.isFinite(v)) thresholds[key] = v;
+  });
+  try {
+    await api('/api/admin/settings', { method: 'POST', body: JSON.stringify({ thresholds }) });
+    alert('阈值已保存');
+    loadAdmin();
+  } catch (e) { alert(e.message); }
+};
 
 $('#new-key').onclick = async () => {
   try {

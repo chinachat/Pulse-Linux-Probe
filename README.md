@@ -17,7 +17,7 @@ real-time TCP ping monitoring from three Chinese carriers (CT/CU/CM).
 - **Ping history chart** — SVG area-gradient chart for CT/CU/CM latency **plus a packet-loss strip** sharing the same time axis; the whole dashboard switches between **1 h / 6 h / 12 h / 24 h** in one click, and the server keeps a full **24 h at 1-minute resolution**
 - **OS detection** — distro icon tinted with the same color as the label via CSS mask + `currentColor` (crisp in both themes)
 - **Region filter** — a tab bar above the grid groups nodes by country (flag + count); picking a region shows only that region's cards
-- **Node detail page** — click any card (or open `#/node/<id>` directly) for a full-page view: CPU model / cores / MHz / L3 cache, distro + version + codename, kernel, process / thread counts, virtualization, swap and buff-cache, load average, plus **1 h / 6 h / 12 h / 24 h** charts for load (CPU/memory/disk), memory composition (used + buff-cache), network rate and latency + packet loss
+- **Node detail page** — click any card (or open `#/node/<id>` directly) for a full-page view: CPU model / cores / MHz / L3 cache, distro + version + codename, kernel, process / thread counts, virtualization, swap and buff-cache, load average, plus **1 h / 6 h / 12 h / 24 h** charts for load (CPU/memory/disk), memory composition (used + buff-cache), network rate and latency + packet loss. Also an **event log** derived on read (threshold breaches, offline gaps, ping timeout / loss / slow), a **paginated sample table**, a **per-NIC snapshot**, and **CSV export** + share-link buttons
 - **Floating nav panel** — node anchors with scroll-spy highlighting, mobile slide-out, back-to-top
 - **Encrypted data file** — PBKDF2-HMAC-SHA256 key derivation + SHA-256 keystream + HMAC-SHA256 integrity, atomic writes, debounced saves
 - **Security** — CSRF protection, forced password + encryption key, non-root container, CSP/HSTS headers, rate-limited login, ping-target injection guard, node & body size caps
@@ -123,6 +123,16 @@ size does not grow with the retained history. The full-resolution series for one
 4. **Blocked Nodes** — view and unblock
 5. **Account** — change admin username
 6. **Ping Targets** — configure three-carrier TCP ping endpoints (host:port)
+7. **Alert thresholds** — CPU / memory / disk / iowait / packet-loss / latency; an event is logged
+   only after **3 consecutive minutes** above the line. Out-of-range values are clamped, junk falls
+   back to the default
+
+Event log: derived from the stored series on read, so it costs no extra storage. Kinds are
+`cpu`, `memory`, `disk`, `iowait`, `offline` (an upload gap), `ping_timeout`, `ping_loss` and
+`ping_slow`. Each threshold breach is reported **once** when it starts, not once per sample.
+
+The detail page caches its last response (memory + `sessionStorage`, 2 min) so re-opening a node or
+flipping the range paints instantly, then still refreshes in the background.
 
 > The admin panel auto-refreshes every 10 s, but **never re-renders while focus is on an input or button** — your in-progress edits are never wiped by a refresh.
 
@@ -145,8 +155,8 @@ size does not grow with the retained history. The full-resolution series for one
 | `DELETE /api/admin/nodes/{id}` | session+CSRF | Delete + block node |
 | `GET /api/admin/blocked` | session | List blocked nodes |
 | `POST /api/admin/unblock` | session+CSRF | Unblock node |
-| `GET /api/admin/settings` | session | View settings (includes CSRF token) |
-| `POST /api/admin/settings` | session+CSRF | Change username / ping targets |
+| `GET /api/admin/settings` | session | View settings (includes CSRF token, thresholds + their metadata) |
+| `POST /api/admin/settings` | session+CSRF | Change username / ping targets / alert thresholds |
 | `GET /api/install.sh?key=...` | session | Generate client installer |
 
 ## Security
@@ -158,6 +168,7 @@ size does not grow with the retained history. The full-resolution series for one
 - Login rate-limited: 5 failures / 5 minutes per IP
 - Ping targets validated as `host:port` before being embedded in the agent script (blocks shell injection)
 - Node count, request body size and **per-report field whitelist** capped (`PROBE_MAX_NODES`, 64 KB) to prevent resource exhaustion
+- The per-NIC list and the interface-name field are rebuilt from a whitelist (characters stripped, numbers clamped, ≤8 entries), never copied from the client
 - Content-Security-Policy, X-Frame-Options, HSTS (on HTTPS), static file whitelist
 - Constant-time password and API-key comparison (`hmac.compare_digest`)
 - `X-Forwarded-For` spoofing blocked by default (`PROBE_TRUST_PROXY`)

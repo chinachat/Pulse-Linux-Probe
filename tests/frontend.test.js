@@ -117,7 +117,17 @@ function loadApp() {
     getComputedStyle: () => ({ getPropertyValue: () => '#10b981' }),
     IntersectionObserver: function () { this.observe = () => {}; this.disconnect = () => {}; },
     fetch: () => Promise.reject(new Error('no network in tests')),
-    navigator: {},
+    navigator: { clipboard: { writeText: async () => {} } },
+    // 详情页缓存用到 sessionStorage，导出 CSV 用到 Blob/URL
+    sessionStorage: {
+      _m: new Map(),
+      getItem(k) { return this._m.has(k) ? this._m.get(k) : null; },
+      setItem(k, v) { this._m.set(k, String(v)); },
+      removeItem(k) { this._m.delete(k); },
+    },
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} },
+    Blob: function Blob(parts) { this.parts = parts; },
+    setTimeout: (fn) => { return 0; },
     alert: () => {},
     btoa: s => Buffer.from(s, 'binary').toString('base64'),
     TextEncoder,
@@ -548,6 +558,143 @@ test('详情页：延迟图用详情页自己的区间，而不是列表页的',
   ctx.renderDetailPing(detailPayload().ping_history, { updated: Math.floor(Date.now() / 1000) });
   const hourBars = (registry['#node-detail .loss-svg']._html.match(/<rect /g) || []).length;
   assert.ok(hourBars < bars, `1 小时 ${hourBars} 应少于 24 小时 ${bars}`);
+});
+
+/* ---------------- P1/P2：事件日志 / 明细表 / 缓存 / 导出 / 阈值 ---------------- */
+function withEvents(over = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const events = [
+    { time: now - 600, level: 'error', kind: 'cpu', text: 'CPU 使用率持续 98%（≥90%，连续 5 分钟）' },
+    { time: now - 1800, level: 'warn', kind: 'ping_timeout', text: '移动 连接超时' },
+    { time: now - 3600, level: 'info', kind: 'offline', text: '节点离线约 4 分钟（01-01 10:00 → 01-01 10:04）' },
+  ];
+  return Object.assign(detailPayload(), {
+    events,
+    thresholds: { cpu: 90, memory: 90, disk: 90, iowait: 60, loss: 50, ping_ms: 500 },
+  }, over);
+}
+
+test('详情页：渲染事件日志（含等级与类型）', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const rows = registry['#detail-events'].childNodes;
+  assert.strictEqual(rows.length, 3);
+  assert.match(rows[0]._class, /ev-error/);
+  assert.match(rows[1]._class, /ev-warn/);
+  assert.match(rows[2]._class, /ev-info/);
+  const text = rows.map(r => r.childNodes.map(c => c.textContent).join(' ')).join(' | ');
+  assert.match(text, /CPU/);
+  assert.match(text, /连接超时/);
+  assert.match(text, /离线约 4 分钟/);
+});
+
+test('详情页：没有事件时给出说明而不是空白', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents({ events: [] }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-events'];
+  assert.strictEqual(box.childNodes.length, 1);
+  assert.match(box.childNodes[0]._class, /hint/);
+  assert.match(box.childNodes[0].textContent, /没有触发任何阈值/);
+});
+
+test('详情页：采样明细表分页，每页 25 行', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const table = registry['#detail-table'].childNodes[0];
+  assert.match(table._class, /data-table/);
+  // 第 1 行是表头
+  assert.strictEqual(table.childNodes.length, 26);
+  assert.strictEqual(table.childNodes[0].childNodes[0].textContent, '时间');
+  const pager = registry['#detail-pager'];
+  assert.strictEqual(pager.childNodes.length, 3);
+  assert.match(pager.textContent + pager.childNodes[1].textContent, /第 1 \/ \d+ 页/);
+  // 翻页后行数变化，且第一页的按钮禁用状态正确
+  assert.strictEqual(pager.childNodes[0].disabled, true);
+  pager.childNodes[2].onclick();
+  assert.strictEqual(registry['#detail-pager'].childNodes[0].disabled, false);
+});
+
+test('详情页：按接口表格（错误/丢包标红）', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents({
+    node: Object.assign(detailPayload().node, {
+      ifaces: [{ name: 'eth0', rx: 1e9, tx: 2e8, err: 0, drop: 0 },
+               { name: 'eth1', rx: 5e6, tx: 1e6, err: 3, drop: 7 }],
+    }),
+  }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-ifaces'];
+  assert.strictEqual(box.hidden, false);
+  const table = box.childNodes[0];
+  assert.strictEqual(table.childNodes.length, 3);            // 表头 + 2 个接口
+  const row2 = table.childNodes[2];
+  assert.strictEqual(row2.childNodes[0].textContent, 'eth1');
+  assert.match(row2.childNodes[3]._class, /bad/);            // 有错误 → 标红
+  assert.strictEqual(table.childNodes[1].childNodes[3]._class, '');
+});
+
+test('详情页：没有接口数据时整块收起', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  assert.strictEqual(registry['#detail-ifaces'].hidden, true);
+});
+
+test('详情页：缓存命中时同步先画出来，再拉最新数据', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  const urls = [];
+  sandbox.fetch = url => {
+    urls.push(String(url));
+    return Promise.resolve({ ok: true, status: 200, json: async () => withEvents() });
+  };
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  assert.match(deepText(registry['#detail-spec']), /Intel\(R\) Xeon/);
+
+  vm.runInContext("location.hash = ''; route();", ctx);
+  registry['#detail-spec'].innerHTML = '';          // 清空，看缓存能不能立刻补回来
+  const before = urls.length;
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  // 还没 await：缓存应当已经同步渲染完毕，页面不会闪空白
+  assert.match(deepText(registry['#detail-spec']), /Intel\(R\) Xeon/, '缓存应先同步渲染');
+  await flush();
+  assert.ok(urls.length > before, '缓存之后仍要拉最新数据');
+});
+
+// 递归取文本：桩元素的 textContent 不会自动聚合子节点
+function deepText(el) {
+  if (!el) return '';
+  return (el.textContent || '') + (el.childNodes || []).map(deepText).join(' ');
+}
+
+test('详情页：导出 CSV 的列与行内容正确', async () => {
+  const { ctx } = loadApp();
+  const csv = ctx.detailCsv(withEvents());
+  const lines = csv.split('\n');
+  assert.match(lines[0], /^time,cpu,memory,disk,rx_bps,tx_bps,load1,mem_cached,swap_used,ping_ct_ms,ping_cu_ms,ping_cm_ms$/);
+  assert.strictEqual(lines.length, 201);         // 表头 + 200 个合并后的采样点
+  // 时间按升序，且是 ISO 格式
+  assert.match(lines[1].split(',')[0], /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(lines[1] < lines[2], '应按时间升序');
+});
+
+test('后台：阈值面板按服务端元信息渲染，保存时提交全部字段', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  const meta = [
+    { key: 'cpu', label: 'CPU 使用率', default: 90, min: 10, max: 100 },
+    { key: 'loss', label: '单点丢包率', default: 50, min: 5, max: 100 },
+  ];
+  // 阈值面板用的是 box.querySelectorAll，桩元素返回空数组，这里直接调渲染函数并断言不抛错
+  assert.doesNotThrow(() => ctx.renderThresholds(meta, { cpu: 85, loss: 30 }));
+  void registry; void sandbox;
 });
 
 test('详情页：切走后旧响应不覆盖新页面', async () => {

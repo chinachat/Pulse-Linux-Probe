@@ -245,6 +245,24 @@ add_num tcp_ping_cu "$tcp_ping_cu"
 add_num tcp_ping_cm "$tcp_ping_cm"
 add_num net_total_rx "$total_rx"
 add_num net_total_tx "$total_tx"
+# 按接口快照（当前值，不进历史）：只取非 lo、按累计收包降序的前 8 个。
+# 用 while+进程替换而不是管道，否则子 shell 里累加的 _ifaces 会丢。
+num_or_zero() {
+  case "${1:-}" in ''|*[!0-9.-]*) echo 0 ;; *) echo "$1" ;; esac
+}
+_ifaces=""
+add_iface() {
+  local n rx tx er dr
+  n=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._:@-')
+  test -n "$n" || return 0
+  rx=$(num_or_zero "$2"); tx=$(num_or_zero "$3")
+  er=$(num_or_zero "$4"); dr=$(num_or_zero "$5")
+  _ifaces="${_ifaces:+$_ifaces,}{\"name\":\"$n\",\"rx\":$rx,\"tx\":$tx,\"err\":$er,\"drop\":$dr}"
+}
+while read -r _ifn _ifrx _iftx _iferr _ifdrop; do
+  add_iface "$_ifn" "$_ifrx" "$_iftx" "$_iferr" "$_ifdrop"
+done < <(awk 'FNR>2 && $1!="lo:" { n=$1; sub(/:$/,"",n); printf "%s %.0f %.0f %.0f %.0f\n", n, $2, $10, $4+$12, $5+$13 }' /proc/net/dev 2>/dev/null | sort -k2 -nr | head -n 8) || true
+_fields="${_fields:+$_fields,}\"ifaces\":[${_ifaces}]"
 printf '{%s}' "$_fields"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload

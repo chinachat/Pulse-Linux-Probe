@@ -577,6 +577,96 @@ class RegressionTest(unittest.TestCase):
         _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=300")
         self.assertGreaterEqual(len(json.loads(raw)["history"]), 1)
 
+    def test_12_detail_derives_events_and_exposes_thresholds(self):
+        key = make_key(self.base, self.admin, "ev")["key"]
+        # 连续 5 个采样 CPU ≥90 → 派生一条 CPU 事件
+        for _ in range(5):
+            http(self.base, "POST", "/api/report",
+                 {"hostname": "ev-node", "cpu": 95, "memory": 20, "disk": 20}, {"X-API-Key": key})
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "ev-node", "cpu": 95, "memory": 20, "disk": 20},
+                         {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=86400")
+        body = json.loads(raw)
+        self.assertIn("events", body)
+        self.assertIn("thresholds", body)
+        self.assertEqual(body["thresholds"]["cpu"], 90)
+        kinds = {e["kind"] for e in body["events"]}
+        self.assertIn("cpu", kinds)
+        cpu_ev = [e for e in body["events"] if e["kind"] == "cpu"][0]
+        self.assertIn("连续", cpu_ev["text"])
+        self.assertIn(cpu_ev["level"], ("warn", "error"))
+
+    def test_13_thresholds_are_clamped_and_applied(self):
+        # 超范围夹到边界，非数值回落默认，未知键忽略
+        status, _, raw = http(self.base, "POST", "/api/admin/settings",
+                              {"thresholds": {"cpu": 999, "loss": "abc", "bogus": 1}},
+                              self.admin)
+        self.assertEqual(status, 200, raw)
+        th = json.loads(raw)["thresholds"]
+        self.assertEqual(th["cpu"], 100)      # 夹到 max
+        self.assertEqual(th["loss"], 50)      # 非数值 → 默认
+        self.assertNotIn("bogus", th)
+        self.assertEqual(th["memory"], 90)    # 未提交的保持默认
+
+        # 阈值调低后，原本不触发的事件应该出现
+        key = make_key(self.base, self.admin, "th")["key"]
+        for _ in range(4):
+            http(self.base, "POST", "/api/report",
+                 {"hostname": "th-node", "cpu": 25, "memory": 10, "disk": 10}, {"X-API-Key": key})
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "th-node", "cpu": 25, "memory": 10, "disk": 10},
+                         {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=86400")
+        self.assertNotIn("cpu", {e["kind"] for e in json.loads(raw)["events"]})
+
+        http(self.base, "POST", "/api/admin/settings", {"thresholds": {"cpu": 10}}, self.admin)
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=86400")
+        self.assertIn("cpu", {e["kind"] for e in json.loads(raw)["events"]},
+                      "阈值调低后应命中")
+        # 恢复默认，免得影响后续用例
+        http(self.base, "POST", "/api/admin/settings",
+             {"thresholds": {"cpu": 90, "memory": 90, "disk": 90, "iowait": 60,
+                             "loss": 50, "ping_ms": 500}}, self.admin)
+
+    def test_14_ifaces_are_whitelisted_and_capped(self):
+        key = make_key(self.base, self.admin, "if")["key"]
+        payload = {"hostname": "if-node", "cpu": 1,
+                   "ifaces": [
+                       {"name": "eth0", "rx": 1000, "tx": 2000, "err": 0, "drop": 0},
+                       # 非法字符 / 负数 / 天文数字
+                       {"name": 'eth1"; rm -rf /', "rx": -5, "tx": 1e99, "err": 1, "drop": 2},
+                       "not-a-dict",                      # 直接丢弃
+                       {"name": "", "rx": 1},             # 空名字丢弃
+                       {"name": "e" * 40, "rx": 1},       # 名字截断到 16
+                   ]}
+        _, _, raw = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        got = json.loads(raw)["node"]["ifaces"]
+        self.assertEqual(len(got), 3, got)
+        self.assertEqual(got[0], {"name": "eth0", "rx": 1000.0, "tx": 2000.0, "err": 0.0, "drop": 0.0})
+        self.assertEqual(got[1]["name"], "eth1rm-rf")     # 非白名单字符被剥掉
+        self.assertEqual(got[1]["rx"], 0)                 # 负数归零
+        self.assertEqual(got[1]["tx"], 1e15)              # 夹到上限
+        self.assertEqual(got[2]["name"], "e" * 16)        # 截断
+
+        # 超过上限只保留前 8 个
+        many = {"hostname": "if2-node", "cpu": 1,
+                "ifaces": [{"name": f"eth{i}", "rx": i} for i in range(20)]}
+        _, _, raw = http(self.base, "POST", "/api/report", many, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        self.assertEqual(len(json.loads(raw)["node"]["ifaces"]), 8)
+        # 传个非列表也不该炸
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "if3-node", "cpu": 1, "ifaces": "nope"}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        self.assertEqual(json.loads(raw)["node"]["ifaces"], [])
+
 
 class DataFileMigrationTest(unittest.TestCase):
     """v1 容器（裸 SHA-256 密钥）必须能读，并在下一次保存时自动升级成 v2（PBKDF2）。"""
