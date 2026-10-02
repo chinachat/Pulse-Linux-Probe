@@ -117,6 +117,29 @@ function lossStats(samples) {
   return { lost, total, pct: total ? lost / total * 100 : 0 };
 }
 
+/* 采样点 < 2 时曲线画不出来：xPositions 只返回一个 x，折线和面积都会退化成零宽，
+   界面上就是一片空白 —— 看着像功能坏了，其实只是数据还没攒够。这里用一句说明
+   替代空白。返回 true 表示已用占位说明取代图表，调用方应跳过绘制。
+   （延迟图不适用：pingChart 在单点时会画一个圆点，本来就看得到。） */
+function chartPlaceholder(svg, samples) {
+  if (!svg || !svg.parentElement) return false;
+  const host = svg.parentElement;
+  const existing = host.querySelector('.chart-empty');
+  const n = samples ? samples.length : 0;
+  if (n >= 2) {
+    if (existing) existing.remove();
+    return false;
+  }
+  const hint = existing || document.createElement('div');
+  hint.className = 'chart-empty';
+  hint.textContent = n === 0
+    ? '该区间暂无采样点'
+    : '采样点不足（' + n + '/2），下 1 分钟后即可画出曲线';
+  if (!existing) host.append(hint);
+  svg.innerHTML = '';
+  return true;
+}
+
 /* ---------- 实时网络速率图（canvas 面积渐变 + 双曲线） ---------- */
 function networkChart(canvas, history = [], current = {}, opts = {}) {
   const count = opts.count || 30;
@@ -766,8 +789,10 @@ function renderDetailLoad(data) {
   });
   const hint = $('#detail-load-hint');
   if (hint) hint.textContent = PING_RANGE_LABELS[_detailRange] || '';
-  pctLines(document.querySelector('#node-detail .load-svg'), samples, LOAD_SERIES, 96);
-  memChart(document.querySelector('#node-detail .mem-svg'), samples, n.mem_total, 80);
+  const loadSvg = document.querySelector('#node-detail .load-svg');
+  if (!chartPlaceholder(loadSvg, samples)) pctLines(loadSvg, samples, LOAD_SERIES, 96);
+  const memSvg = document.querySelector('#node-detail .mem-svg');
+  if (!chartPlaceholder(memSvg, samples)) memChart(memSvg, samples, n.mem_total, 80);
   renderTimeAxis(document.querySelector('#node-detail .load-xaxis'), samples);
   renderTimeAxis(document.querySelector('#node-detail .mem-xaxis'), samples);
 }
@@ -838,20 +863,40 @@ function renderDetailPing(samples, n) {
     s.textContent = `${icons[k]} ${ms < 0 ? '超时' : ms + 'ms'}`;
     prow.append(s);
   });
-  // 区间内各运营商丢包率
-  ['ct', 'cu', 'cm'].forEach(k => {
-    let lost = 0, total = 0;
-    win.forEach(s => {
-      const v = Number(s[k]) || 0;
-      if (v < 0) { lost++; total++; } else if (v > 0) total++;
+  // 三网丢包：每个运营商一行"时间线 + 区间丢包率"。
+  // 百分比与"什么时候不通"放在同一行，因此不再往上面的徽章行里塞重复的百分比。
+  const cbox = $('#detail-loss-carriers');
+  if (cbox) {
+    cbox.innerHTML = '';
+    ['ct', 'cu', 'cm'].forEach(k => {
+      let lost = 0, total = 0;
+      win.forEach(s => {
+        const v = Number(s[k]) || 0;
+        if (v < 0) { lost++; total++; } else if (v > 0) total++;
+      });
+      const pct = total ? Math.round(lost / total * 100) : 0;
+      const row = document.createElement('div');
+      row.className = 'loss-row loss-carrier';
+      const tag = document.createElement('span');
+      tag.className = 'loss-tag';
+      tag.textContent = icons[k];
+      // 用 createElementNS：SVG 元素必须建在 SVG 命名空间里，否则画不出来。
+      // 兜底走 createElement —— 测试用的最小 DOM 桩没有 createElementNS
+      // （上面框选层的 rect 也是同样的写法）。
+      const csvg = document.createElementNS
+        ? document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+        : document.createElement('svg');
+      csvg.setAttribute('class', 'loss-svg');
+      csvg.setAttribute('viewBox', '0 0 600 10');
+      csvg.setAttribute('preserveAspectRatio', 'none');
+      const val = document.createElement('b');
+      val.className = 'loss-val ' + (pct === 0 ? 'ok' : pct < 5 ? 'warn' : 'bad');
+      val.textContent = total ? pct + '%' : '—';
+      row.append(tag, csvg, val);
+      cbox.append(row);
+      carrierLossChart(csvg, win, k, 10);
     });
-    if (!total) return;
-    const pct = Math.round(lost / total * 100);
-    const em = document.createElement('em');
-    em.className = 'loss loss-' + (pct === 0 ? 'ok' : pct < 5 ? 'warn' : 'bad');
-    em.textContent = icons[k] + ' ' + pct + '%';
-    prow.append(em);
-  });
+  }
 }
 
 /* ---------- 事件日志 ---------- */
@@ -1001,6 +1046,33 @@ function lossChart(svg, samples = [], height = 18) {
     const bh = ratio > 0 ? Math.max(2.5, ratio * (h - 2)) : 1.2;
     const cls = ratio >= 1 ? 'bad' : ratio >= 0.34 ? 'warn' : ratio > 0 ? 'low' : 'none';
     bars += `<rect x="${x0.toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" class="loss-bar ${cls}"/>`;
+  }
+  svg.innerHTML = `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>` + bars;
+}
+
+/* 单运营商丢包时间线：该采样点该运营商探测失败就画一根满高红条，成功则画一条细底线。
+   单个采样点只有"通 / 不通"两种结果，所以画成"哪个运营商在什么时候不通"的时间线，
+   比画成折线更有意义。与上方延迟折线共用时间轴，可直接对上。 */
+function carrierLossChart(svg, samples = [], key = 'ct', height = 10) {
+  const w = 600, h = height;
+  if (!svg) return;
+  if (!samples.length) { svg.innerHTML = ''; return; }
+  svg.setAttribute('viewBox', '0 0 600 ' + h);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const xs = xPositions(samples, w);
+  let bars = '';
+  for (let i = 0; i < samples.length; i++) {
+    const v = Number(samples[i][key]) || 0;
+    const x0 = xs[i];
+    const x1 = i + 1 < samples.length ? xs[i + 1] : w;
+    const bw = Math.max(1.2, x1 - x0).toFixed(1);
+    if (v < 0) {
+      bars += `<rect x="${x0.toFixed(1)}" y="1" width="${bw}" height="${h - 2}" class="loss-bar bad"/>`;
+    } else if (v > 0) {
+      bars += `<rect x="${x0.toFixed(1)}" y="${h - 3}" width="${bw}" height="2" class="loss-bar low"/>`;
+    } else {
+      bars += `<rect x="${x0.toFixed(1)}" y="${h - 1}" width="${bw}" height="1" class="loss-bar none"/>`;
+    }
   }
   svg.innerHTML = `<line x1="0" y1="${h - 0.5}" x2="${w}" y2="${h - 0.5}" stroke="var(--line)"/>` + bars;
 }

@@ -397,7 +397,7 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .chart-head span { color: var(--muted); font: 10px var(--font-mono); }
 .chart-hint { color: var(--muted); font: 10px var(--font-sans); font-style: normal; opacity: .85; }
-.chart-body { display: flex; gap: 0; }
+.chart-body { display: flex; gap: 0; position: relative; }
 .ping-svg { display: block; width: 100%; height: 56px; }
 .y-axis { display: flex; flex-direction: column; justify-content: space-between; width: 30px; flex-shrink: 0; padding: 2px 4px 4px 0; }
 .y-axis span { font: 8px var(--font-mono); color: var(--muted); text-align: right; line-height: 1; }
@@ -420,6 +420,29 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .loss-bar.low { fill: #10b981; opacity: .75; }
 .loss-bar.warn { fill: #f59e0b; }
 .loss-bar.bad { fill: #ef4444; }
+
+/* ---------- 单运营商丢包时间线 ---------- */
+/* 三条细条，与上方延迟折线共用时间轴。单个采样点只有"通/不通"两种结果，
+   所以画成"哪个运营商在什么时候不通"的时间线，比画成折线更有意义。 */
+.loss-per-carrier { margin-top: 2px; }
+.loss-carrier { margin-top: 2px; }
+.loss-carrier .loss-svg { height: 10px; }
+.loss-carrier .loss-tag { width: 30px; }
+
+/* ---------- 采样点不足时的占位说明 ---------- */
+/* xPositions 在采样点 < 2 时只返回一个 x，折线/面积都会退化成零宽而"看起来是空的"。
+   与其静默空白（像坏了），不如直接说清楚还要等多久。 */
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font: 11px var(--font-sans);
+  text-align: center;
+  pointer-events: none;
+}
 
 /* ---------- 时间轴刻度 ---------- */
 /* 刻度用 HTML 绝对定位，不画进 SVG：SVG 是 preserveAspectRatio="none"，
