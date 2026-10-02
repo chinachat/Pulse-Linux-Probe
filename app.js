@@ -285,7 +285,8 @@ function pctLines(svg, samples, series, height = 96) {
   if (!samples.length) return;
   const xs = xPositions(samples, w);
   const py = v => h - pad - Math.min(Math.max(Number(v) || 0, 0), 100) / 100 * (h - pad * 2);
-  let html = '';
+  // 先写时间轴的竖虚线，它衬在数据下面
+  let html = vGridHtml(samples, svg.clientWidth || 0, h);
   [100, 50].forEach(v => {
     html += `<line x1="0" y1="${py(v).toFixed(1)}" x2="${w}" y2="${py(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3"/>`;
   });
@@ -1126,7 +1127,7 @@ function pingChart(svg, samples = [], height = 48) {
   };
   const uid = 'pg' + (++_uid);
   const baseY = (h - pad).toFixed(1);
-  let html = `<defs>${['ct', 'cu', 'cm'].map(k =>
+  let html = vGridHtml(samples, svg.clientWidth || 0, h) + `<defs>${['ct', 'cu', 'cm'].map(k =>
     `<linearGradient id="${uid}-${k}" x1="0" y1="0" x2="0" y2="1">` +
     `<stop offset="0" stop-color="${colors[k]}" stop-opacity=".30"/>` +
     `<stop offset="1" stop-color="${colors[k]}" stop-opacity="0"/>` +
@@ -1239,28 +1240,46 @@ function fmtTick(ts, fmt) {
   return `${p(d.getHours())}:00`;
 }
 
-/* 时间刻度。SVG 用了 preserveAspectRatio="none"，在里面放文字会被横向拉变形，
+/* 时间刻度的分位。图表里的竖网格线与下方的 HTML 刻度标签共用这一套，
+   所以两者必然一一对齐（各自的容器宽度相同，抽稀步长也会一致）。
+   width 只用于决定抽稀：宽度不够就少画几根，免得糊成一片。 */
+function timeTicks(samples, width) {
+  if (!samples || samples.length < 2) return [];
+  const t0 = Number(samples[0].time) || 0;
+  const t1 = Number(samples[samples.length - 1].time) || 0;
+  if (!(t1 > t0)) return [];
+  const span = t1 - t0;
+  const { step, fmt } = pickTickStep(span);
+  const offset = new Date(t0 * 1000).getTimezoneOffset() * 60;   // 秒
+  const all = [];
+  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) {
+    all.push({ x: (t - t0) / span, label: fmtTick(t, fmt) });
+  }
+  const maxTicks = width ? Math.max(2, Math.floor(width / 46)) : all.length;
+  const stride = Math.max(1, Math.ceil(all.length / maxTicks));
+  return all.filter((_, i) => i % stride === 0);
+}
+
+/* 时间轴竖网格线（虚线）。必须写在数据之前 —— SVG 按文档顺序绘制，
+   先写的衬在下面，后写的会盖住曲线。
+   vector-effect 不能省：viewBox 是 600 宽而实际宽度是它的两三倍，
+   不锁定描边宽度的话竖线会被横向抻成 2~3px。 */
+function vGridHtml(samples, width, h) {
+  const ticks = timeTicks(samples, width);
+  if (ticks.length < 2) return '';
+  return ticks.map(t => {
+    const x = (t.x * 600).toFixed(1);
+    return `<line x1="${x}" y1="0" x2="${x}" y2="${h}" stroke="var(--line)"` +
+      ` stroke-dasharray="3" vector-effect="non-scaling-stroke"/>`;
+  }).join('');
+}
+
+/* 时间刻度标签。SVG 用了 preserveAspectRatio="none"，在里面放文字会被横向拉变形，
    所以刻度用 HTML 绝对定位叠在图的下面。 */
 function renderTimeAxis(box, samples) {
   if (!box) return;
   box.innerHTML = '';
-  if (!samples || samples.length < 2) return;
-  const t0 = Number(samples[0].time) || 0;
-  const t1 = Number(samples[samples.length - 1].time) || 0;
-  if (!(t1 > t0)) return;
-  const span = t1 - t0;
-  const { step, fmt } = pickTickStep(span);
-  const offset = new Date(t0 * 1000).getTimezoneOffset() * 60;   // 秒
-  const ticks = [];
-  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) {
-    ticks.push({ x: (t - t0) / span, label: fmtTick(t, fmt) });
-  }
-  // 宽度不够就抽稀，宁可少几个也不要糊成一片
-  const width = box.clientWidth || 0;
-  const maxTicks = width ? Math.max(2, Math.floor(width / 46)) : ticks.length;
-  const stride = Math.max(1, Math.ceil(ticks.length / maxTicks));
-  ticks.forEach((tick, i) => {
-    if (i % stride) return;
+  timeTicks(samples, box.clientWidth || 0).forEach(tick => {
     const el = document.createElement('span');
     el.className = 'tick';
     el.style.left = (tick.x * 100).toFixed(3) + '%';

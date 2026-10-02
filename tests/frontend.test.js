@@ -870,6 +870,36 @@ test('详情页：总负载率曲线用 disk_agg；老样本退回根盘 disk', 
   assert.match(registry['#detail-diskagg-hint'].textContent, /当前 55%/);
 });
 
+test('图表：按时间刻度画竖虚线，且与下方刻度标签一一对齐', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, detailPayload());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+
+  const check = (svgSel, axisSel, label) => {
+    const html = registry[svgSel]._html;
+    const ticks = registry[axisSel].childNodes;
+    // 竖线特征：y1="0"、x1 === x2、带虚线
+    const vlines = [...html.matchAll(
+      /<line x1="([\d.]+)" y1="0" x2="([\d.]+)"[^>]*stroke-dasharray="3"/g)];
+    assert.ok(vlines.length >= 2, label + ' 应有竖网格线');
+    assert.strictEqual(vlines.length, ticks.length, label + ' 竖线数应与刻度数一致');
+    vlines.forEach((m, i) => {
+      assert.strictEqual(m[1], m[2], label + ' 网格线必须是竖直的');
+      const want = parseFloat(ticks[i].style.left) / 100 * 600;   // viewBox 宽 600
+      assert.ok(Math.abs(Number(m[1]) - want) < 0.6,
+        label + ' 第 ' + i + ' 条竖线 x=' + m[1] +
+        '，刻度 ' + ticks[i].style.left + ' → 应为 ' + want.toFixed(1));
+    });
+    // 描边宽度必须锁住，否则会被 preserveAspectRatio="none" 横向抻粗
+    assert.match(html, /vector-effect="non-scaling-stroke"\/><\/line>|stroke-dasharray="3" vector-effect="non-scaling-stroke"/,
+      label + ' 竖线应锁定描边宽度');
+  };
+  check('#node-detail .load-svg', '#node-detail .load-xaxis', '负载图');
+  check('#node-detail .diskagg-svg', '#node-detail .diskagg-xaxis', '总负载率图');
+  check('#node-detail .ping-svg', '#node-detail .ping-xaxis', '延迟图');
+});
+
 test('详情页：没有多盘数据时摘要与表格都收起', async () => {
   const { ctx, registry, sandbox } = loadApp();
   withFetch(ctx, sandbox, withEvents());
