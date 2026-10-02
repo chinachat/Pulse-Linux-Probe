@@ -736,6 +736,38 @@ test('详情页：没有接口数据时整块收起', async () => {
   assert.strictEqual(registry['#detail-ifaces'].hidden, true);
 });
 
+test('详情页：多盘列表按使用率降序渲染，≥90% 标红', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, detailPayload({
+    disks: [
+      { mount: '/', total: 1e11, used: 4e10, pct: 40 },
+      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
+      { mount: '/boot', total: 1e9, used: 1e8, pct: 12 },
+    ],
+  }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-disks'];
+  const table = box.childNodes[0];
+  const rows = table.childNodes.slice(1);            // 第 0 个是表头
+  assert.strictEqual(rows.length, 3);
+  // 最紧张的盘排在最前
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[0].textContent)), ['/data', '/', '/boot']);
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[3].textContent)), ['95%', '40%', '12%']);
+  assert.strictEqual(rows[0].childNodes[3]._class, 'bad');   // 95% 标红
+  assert.strictEqual(rows[1].childNodes[3]._class, '');      // 40% 不标
+});
+
+test('详情页：没有多盘数据时整块收起', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-disks'];
+  assert.strictEqual(box.hidden, true);
+  assert.strictEqual((box.childNodes || []).length, 0);
+});
+
 test('详情页：缓存命中时同步先画出来，再拉最新数据', async () => {
   const { ctx, registry, sandbox } = loadApp();
   const urls = [];

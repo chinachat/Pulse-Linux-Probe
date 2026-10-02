@@ -716,6 +716,48 @@ class RegressionTest(unittest.TestCase):
         _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
         self.assertEqual(json.loads(raw)["node"]["ifaces"], [])
 
+    def test_16_disks_are_whitelisted_and_capped(self):
+        key = make_key(self.base, self.admin, "dk")["key"]
+        payload = {"hostname": "dk-node", "cpu": 1, "disks": [
+            {"mount": "/", "total": 1000, "used": 400, "pct": 40},
+            # 非白名单字符 / 负数 / 天文数字 / 越界百分比
+            {"mount": '/data"; rm -rf /', "total": -5, "used": 1e99, "pct": 999},
+            "not-a-dict",                       # 直接丢弃
+            {"mount": "", "total": 1},          # 空挂载点丢弃
+            {"mount": "/m" * 40, "total": 1},   # 超长挂载点截断
+        ]}
+        _, _, raw = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        got = json.loads(raw)["node"]["disks"]
+        self.assertEqual(len(got), 3, got)
+        self.assertEqual(got[0], {"mount": "/", "total": 1000.0, "used": 400.0, "pct": 40.0})
+        self.assertEqual(got[1]["mount"], "/data rm -rf /")   # 非白名单字符被剥掉
+        self.assertEqual(got[1]["total"], 0)                  # 负数归零
+        self.assertEqual(got[1]["used"], 1e15)                # 夹到上限
+        self.assertEqual(got[1]["pct"], 100)                  # 百分比夹到 100
+        self.assertEqual(len(got[2]["mount"]), 64)            # 截断
+
+        # 超过上限只保留前 8 个
+        many = {"hostname": "dk2-node", "cpu": 1,
+                "disks": [{"mount": f"/d{i}", "total": i} for i in range(20)]}
+        _, _, raw = http(self.base, "POST", "/api/report", many, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        self.assertEqual(len(json.loads(raw)["node"]["disks"]), 8)
+
+        # 传个非列表也不该炸
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "dk3-node", "cpu": 1, "disks": "nope"}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        self.assertEqual(json.loads(raw)["node"]["disks"], [])
+
+        # 公开列表接口不下发 disks（只有详情页用得到），避免节点多时白撑响应
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        for node in json.loads(raw)["nodes"]:
+            self.assertNotIn("disks", node)
+
 
 class DataFileMigrationTest(unittest.TestCase):
     """v1 容器（裸 SHA-256 密钥）必须能读，并在下一次保存时自动升级成 v2（PBKDF2）。"""

@@ -88,6 +88,10 @@ EVENT_OFFLINE_GAP = 150      # 相邻采样间隔超过这个秒数即视为一�
 EVENT_MAX = 200              # 事件列表上限
 # 按接口快照：最多几个网卡（只存当前值，不进历史）
 IFACE_LIMIT = 8
+# 多盘快照：最多几个挂载点（同样只存当前值，不进历史）
+DISK_LIMIT = 8
+# 挂载点允许的字符。这里只做一次粗过滤；前端用 textContent 赋值（不拼 HTML）作为第二道防线
+DISK_MOUNT_RE = re.compile(r"[^A-Za-z0-9._:/@ +-]")
 CARRIER_NAMES = {"ct": "电信", "cu": "联通", "cm": "移动"}
 
 def default_thresholds():
@@ -134,6 +138,26 @@ def sanitize_ifaces(raw):
                     "tx": clamp_num(item.get("tx"), 0.0, 1e15),
                     "err": clamp_num(item.get("err"), 0.0, 1e9),
                     "drop": clamp_num(item.get("drop"), 0.0, 1e9)})
+    return out
+
+def sanitize_disks(raw):
+    """多盘用量快照：和 sanitize_ifaces 同一套思路——按白名单重建，绝不原样收下客户端的 dict。
+
+    只存当前值，不进历史（曲线与"磁盘使用率"告警阈值仍只针对根盘 /）。
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:DISK_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        mount = DISK_MOUNT_RE.sub("", str(item.get("mount", "")))[:64]
+        if not mount:
+            continue
+        out.append({"mount": mount,
+                    "total": clamp_num(item.get("total"), 0.0, 1e15),
+                    "used": clamp_num(item.get("used"), 0.0, 1e15),
+                    "pct": clamp_num(item.get("pct"), 0.0, 100.0)})
     return out
 
 def valid_ping_target(value):
@@ -331,8 +355,9 @@ def sanitize_report(body):
     clean["hostname"] = clean["hostname"] or "unknown"
     # 国家码只保留字母，前端还有一次正则校验（双保险，避免拼进 innerHTML）
     clean["country"] = re.sub(r"[^A-Za-z]", "", str(body.get("country", "")))[:2].upper()
-    # 按接口快照是唯一的"列表型"字段，单独按白名单重建（见 sanitize_ifaces）
+    # 列表型字段（按接口 / 多盘）单独按白名单重建，不参与上面的字段循环
     clean["ifaces"] = sanitize_ifaces(body.get("ifaces"))
+    clean["disks"] = sanitize_disks(body.get("disks"))
     return clean
 
 def prune_sessions():
@@ -626,6 +651,8 @@ class App(SimpleHTTPRequestHandler):
                 # 不对外下发 ip：服务端看到的对端地址不等于节点公网 IP（反代/NAT/多出口下
                 # 都是错的），显示出去只会误导。原始值仍留在记录里，后台接口可见。
                 n.pop("ip", None)
+                # 多盘列表只有详情页用得到，列表接口不下发：200 节点 × 8 盘会白白撑大响应
+                n.pop("disks", None)
                 n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
                 # 只下发图表够用的点数：全量 1440 点 × 200 节点会把响应撑到十几 MB，
                 # 而图表宽度只有几百像素。

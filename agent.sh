@@ -35,7 +35,10 @@ case "$total1$idle1$iow1$total2$idle2$iow2" in
     ;;
 esac
 mem=$(free | awk '/Mem:/ {print int($3*100/$2)}')
-disk=$(df -P / | awk 'NR==2 {gsub("%","",$5);print $5}')
+# 锚定 Capacity 列（形如 42%）而不是写死列号：设备名或挂载点里一旦有空格，列号会整体错位，
+# 百分比会取到 Available 这类数字，容量也会算成 0。df -P 的列序固定为
+# Filesystem / total / used / avail / Capacity / Mounted-on，所以 Capacity 往前数第 3 列是 total。
+disk=$(df -P / 2>/dev/null | awk 'NR>1 {for(i=2;i<=NF;i++) if($i ~ /^[0-9]+%$/){sub(/%/,"",$i); print $i; exit}}')
 now=$(date +%s)
 state=/var/lib/linux-probe-network
 install -d /var/lib
@@ -84,7 +87,7 @@ EOF_OS
 fi
 cpu_cores=$(nproc 2>/dev/null || grep -c processor /proc/cpuinfo 2>/dev/null || echo 0)
 mem_total=$(awk '/MemTotal/ {printf "%.0f\n", $2*1024}' /proc/meminfo 2>/dev/null || echo 0)
-disk_total=$(df -P / | awk 'NR==2 {printf "%.0f\n", $2*1024}' 2>/dev/null || echo 0)
+disk_total=$(df -P / 2>/dev/null | awk 'NR>1 {for(i=2;i<=NF;i++) if($i ~ /^[0-9]+%$/){printf "%.0f\n", $(i-3)*1024; exit}}' 2>/dev/null || echo 0)
 
 # ---------- 规格信息（型号/内核/架构/虚拟化等，均为可选字段） ----------
 # 型号、内核、架构不会变：缓存到 /var/lib，避免每分钟重新解析 /proc/cpuinfo
@@ -263,6 +266,53 @@ while read -r _ifn _ifrx _iftx _iferr _ifdrop; do
   add_iface "$_ifn" "$_ifrx" "$_iftx" "$_iferr" "$_ifdrop"
 done < <(awk 'FNR>2 && $1!="lo:" { n=$1; sub(/:$/,"",n); printf "%s %.0f %.0f %.0f %.0f\n", n, $2, $10, $4+$12, $5+$13 }' /proc/net/dev 2>/dev/null | sort -k2 -nr | head -n 8) || true
 _fields="${_fields:+$_fields,}\"ifaces\":[${_ifaces}]"
+# 多盘用量快照（只存当前值，不进历史；曲线与"磁盘使用率"告警阈值仍只针对根盘 /）。
+# -l 只列本地文件系统：NFS/CIFS 对端无响应时 df 会长时间阻塞，而这是每分钟一次的 cron，
+# 卡住就会像没有 --max-time 的 curl 一样把进程堆起来；外面再套 timeout 双保险。
+# 极简系统（busybox df 等）不支持 -l 时会拿到空结果，这里退回不带 -l 再试一次，仍然有 timeout 兜底，
+# 并在 awk 里把网络文件系统（host:/export、//server/share）滤掉。
+# 伪文件系统与快照设备排除；同一设备只留第一次（bind mount 会重复出现）；按容量取前 8。
+disks_raw=$(timeout 5 df -P -l 2>/dev/null) || disks_raw=""
+# 退回不带 -l 时，df 不会替我们排除网络文件系统，得自己滤（见下面的 netfilter）。
+# 注意不能在 -l 生效时也按"设备名含冒号"过滤：那只在退回路径下才成立，
+# 正常路径下误伤面更大。
+netfilter=0
+if test -z "$disks_raw"; then
+  disks_raw=$(timeout 5 df -P 2>/dev/null) || disks_raw=""
+  netfilter=1
+fi
+disks_parsed=$(printf '%s\n' "$disks_raw" | awk -v netfilter="$netfilter" '
+  NR > 1 {
+    cap = 0
+    for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { cap = i; break }
+    if (cap < 4) next
+    total = $(cap - 3); used = $(cap - 2)
+    if (total !~ /^[0-9]+$/ || used !~ /^[0-9]+$/) next
+    pct = $cap; gsub(/%/, "", pct)
+    dev = $1; for (i = 2; i <= cap - 4; i++) dev = dev " " $i
+    if (dev ~ /^(tmpfs|devtmpfs|overlay|squashfs|none|udev|ramfs|efivarfs|cgroup|proc|sysfs|autofs)$/) next
+    if (dev ~ /^\/dev\/loop/) next
+    if (netfilter && (dev ~ /:/ || dev ~ /^\/\//)) next     # host:/export、//server/share
+    if (seen[dev]++) next
+    mnt = $(cap + 1)
+    for (i = cap + 2; i <= NF; i++) mnt = mnt " " $i
+    if (mnt == "") next
+    gsub(/\|/, "", mnt)                                     # | 是下面的字段分隔符，挂载点里不能留
+    printf "%s|%.0f|%.0f|%s\n", mnt, total * 1024, used * 1024, pct
+  }' 2>/dev/null | sort -t'|' -k2 -nr | head -n 8)
+_disks=""
+add_disk() {
+  local m
+  m=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._:/@ +-')
+  test -n "$m" || return 0
+  _disks="${_disks:+$_disks,}{\"mount\":\"$(json_escape "$m")\",\"total\":$(num_or_zero "$2"),\"used\":$(num_or_zero "$3"),\"pct\":$(num_or_zero "$4")}"
+}
+while IFS='|' read -r _dm _dt _du _dp; do
+  add_disk "$_dm" "$_dt" "$_du" "$_dp"
+done <<EOF_DISKS
+$disks_parsed
+EOF_DISKS
+_fields="${_fields:+$_fields,}\"disks\":[${_disks}]"
 printf '{%s}' "$_fields"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload

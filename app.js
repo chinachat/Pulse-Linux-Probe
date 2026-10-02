@@ -555,7 +555,7 @@ function openDetail(id) {
     _detailShownKey = null;
     _detailEnd = null;
     ['#detail-head', '#detail-spec', '#detail-bars', '#detail-net-stats', '#detail-ping-row',
-     '#detail-events', '#detail-ifaces'].forEach(sel => {
+     '#detail-events', '#detail-ifaces', '#detail-disks'].forEach(sel => {
       const el = $(sel);
       if (el) { el.innerHTML = ''; el.hidden = false; }
     });
@@ -657,6 +657,7 @@ function renderDetail(data) {
   renderDetailLoad(data);
   renderDetailNet(n, data.history || []);
   renderDetailIfaces(n);
+  renderDetailDisks(n);
   renderDetailPing(data.ping_history || [], n);
   renderDetailEvents(data.events || []);
 }
@@ -960,6 +961,44 @@ function renderDetailIfaces(n) {
       const td = document.createElement('td');
       td.textContent = v;
       if (i >= 3 && Number(v) > 0) td.className = 'bad';
+      tr.append(td);
+    });
+    table.append(tr);
+  });
+  box.append(table);
+}
+
+/* ---------- 多盘用量快照 ---------- */
+/* 与"按接口"同样是列表型数据：只存当前值、不进历史（曲线与告警阈值仍只针对根盘 /）。
+   服务端已按白名单重建过，这里只负责展示，并按使用率降序排，最紧张的盘排在最前。 */
+function renderDetailDisks(n) {
+  const box = $('#detail-disks');
+  if (!box) return;
+  box.innerHTML = '';
+  const list = Array.isArray(n.disks) ? n.disks : [];
+  if (!list.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const table = document.createElement('table');
+  table.className = 'mini-table';
+  const head = document.createElement('tr');
+  ['挂载点', '容量', '已用', '使用率'].forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    head.append(th);
+  });
+  table.append(head);
+  list.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0)).forEach(d => {
+    const tr = document.createElement('tr');
+    const pct = Number(d.pct) || 0;
+    const cells = [d.mount, bytes(d.total), bytes(d.used), pct + '%'];
+    cells.forEach((v, i) => {
+      const td = document.createElement('td');
+      td.textContent = v;
+      // 与丢包率同一套配色：≥90% 标红
+      if (i === 3 && pct >= 90) td.className = 'bad';
       tr.append(td);
     });
     table.append(tr);
