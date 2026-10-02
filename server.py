@@ -92,6 +92,13 @@ IFACE_LIMIT = 8
 DISK_LIMIT = 8
 # 挂载点允许的字符。这里只做一次粗过滤；前端用 textContent 赋值（不拼 HTML）作为第二道防线
 DISK_MOUNT_RE = re.compile(r"[^A-Za-z0-9._:/@ +-]")
+# 块设备树（lsblk）快照：最多几条。分区、LVM、RAID 都各算一条，所以要比磁盘数宽松。
+# 注意不能按 name 去重 —— lsblk 会把多父设备（如 RAID 阵列）在每个成员下各列一次，
+# 那个重复正是"这块盘属于某阵列"的唯一线索。
+HDISK_LIMIT = 64
+HDISK_NAME_RE = re.compile(r"[^A-Za-z0-9._:-]")
+HDISK_TYPE_RE = re.compile(r"[^A-Za-z0-9]")
+HDISK_MODEL_RE = re.compile(r"[^A-Za-z0-9 ._+()/-]")
 CARRIER_NAMES = {"ct": "电信", "cu": "联通", "cm": "移动"}
 
 def default_thresholds():
@@ -172,6 +179,101 @@ def aggregate_disk_pct(clean):
     if total > 0:
         return round(min(max(used / total * 100.0, 0.0), 100.0), 2)
     return clamp_num(clean.get("disk"), 0.0, 100.0)
+
+def sanitize_hdisks(raw):
+    """块设备树快照（lsblk）：和 ifaces / disks 一样按白名单重建。
+
+    name 故意不去重：lsblk 会把多父设备的子节点（RAID 阵列）在每个成员下各列一次，
+    这个重复是判断"这块盘属于某个阵列"的唯一线索。
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:HDISK_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        name = HDISK_NAME_RE.sub("", str(item.get("name", "")))[:32]
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "type": HDISK_TYPE_RE.sub("", str(item.get("type", "")))[:16],
+            "size": clamp_num(item.get("size"), 0.0, 1e18),
+            "mount": DISK_MOUNT_RE.sub("", str(item.get("mount", "")))[:64],
+            "parent": HDISK_NAME_RE.sub("", str(item.get("parent", "")))[:32],
+            "model": HDISK_MODEL_RE.sub("", str(item.get("model", "")))[:40].strip(),
+            "rota": 1.0 if clamp_num(item.get("rota"), 0.0, 1.0) >= 0.5 else 0.0,
+        })
+    return out
+
+def build_hardware_disks(hdisks, disks):
+    """把块设备树整理成「硬件磁盘」列表，并把已挂载的文件系统归回所属物理盘。
+
+    为什么要这么绕：df（也就是 disks）只知道"哪个挂载点用了多少"，**不知道它落在哪块盘上**。
+    一块盘可能被拆成多个分区，也可能被 LVM / RAID / dm-crypt 盖住，df 里只看得到
+    逻辑卷或阵列。这里靠 lsblk 的 parent 关系从挂载点往上走：
+
+      · 中途只经过 partition 的  → 该文件系统的用量直接计入这块盘（可以相加）；
+      · 中途跨过 lvm/raid/crypt 的 → 这块盘是逻辑卷或阵列的承载盘，**单盘的"已用"
+        没有唯一答案**（RAID1 同一份数据算哪块盘的？），所以不编造数字，
+        只标注角色、把用量留空。
+    """
+    by_name = {}
+    for d in hdisks:
+        by_name.setdefault(d["name"], d)   # 父设备（分区）名字唯一，首次为准
+    usage = {d["mount"]: d for d in disks if d.get("mount")}
+
+    agg = {}
+    for dev in hdisks:
+        mount = dev.get("mount") or ""
+        if not mount:
+            continue
+        node, crossed, seen = dev, [], set()
+        if node.get("type") not in ("part", "disk"):
+            crossed.append(node.get("type") or "")
+        while node.get("parent") and node["parent"] in by_name and node["name"] not in seen:
+            seen.add(node["name"])
+            parent = by_name[node["parent"]]
+            if parent.get("type") == "disk":
+                node = parent
+                break
+            if parent.get("type") != "part":
+                crossed.append(parent.get("type") or "")
+            node = parent
+        if node.get("type") != "disk":
+            continue                      # 找不到归属的物理盘（异常 / 虚拟设备）
+        entry = agg.setdefault(node["name"], {"used": 0.0, "total": 0.0, "roles": [], "mounts": 0})
+        entry["mounts"] += 1
+        for role in crossed:
+            if role and role not in entry["roles"]:
+                entry["roles"].append(role)
+        u = usage.get(mount)
+        if u and not crossed:             # 直接挂载才计量；跨了逻辑层就不猜
+            entry["used"] += float(u.get("used") or 0)
+            entry["total"] += float(u.get("total") or 0)
+
+    out, seen_disk = [], set()
+    for d in hdisks:
+        if d.get("type") != "disk" or d["name"] in seen_disk:
+            continue
+        seen_disk.add(d["name"])
+        e = agg.get(d["name"])
+        used = total = pct = None
+        if e and e["total"] > 0:
+            used, total = e["used"], e["total"]
+            pct = round(min(max(used / total * 100.0, 0.0), 100.0), 1)
+        out.append({
+            "name": d["name"],
+            "size": d["size"],
+            "model": d["model"],
+            "media": "HDD" if d["rota"] >= 0.5 else "SSD",
+            "role": "/".join(e["roles"]) if e else "",
+            "mounts": e["mounts"] if e else 0,
+            "used": used,
+            "total": total,
+            "pct": pct,
+        })
+    return out                          # 保持 lsblk 的顺序（内核设备序），编号才稳定
 
 def valid_ping_target(value):
     if not value:
@@ -368,9 +470,10 @@ def sanitize_report(body):
     clean["hostname"] = clean["hostname"] or "unknown"
     # 国家码只保留字母，前端还有一次正则校验（双保险，避免拼进 innerHTML）
     clean["country"] = re.sub(r"[^A-Za-z]", "", str(body.get("country", "")))[:2].upper()
-    # 列表型字段（按接口 / 多盘）单独按白名单重建，不参与上面的字段循环
+    # 列表型字段（按接口 / 多盘 / 块设备树）单独按白名单重建，不参与上面的字段循环
     clean["ifaces"] = sanitize_ifaces(body.get("ifaces"))
     clean["disks"] = sanitize_disks(body.get("disks"))
+    clean["hdisks"] = sanitize_hdisks(body.get("hdisks"))
     return clean
 
 def prune_sessions():
@@ -633,7 +736,9 @@ class App(SimpleHTTPRequestHandler):
         stamps = [s.get("time", 0) for s in full_load] + [s.get("time", 0) for s in full_ping]
         oldest = min(stamps) if stamps else 0
         newest = max(stamps) if stamps else end
-        detail = {k: v for k, v in node.items() if k not in ("history", "ping_history", "ip")}
+        detail = {k: v for k, v in node.items() if k not in ("history", "ping_history", "ip", "hdisks")}
+        # 硬件磁盘视图：由块设备树 + df 结果在读取时派生，不额外落盘
+        detail["hardware_disks"] = build_hardware_disks(node.get("hdisks") or [], node.get("disks") or [])
         detail["online"] = now - node.get("updated", 0) < OFFLINE_SECONDS
         with LOCK:
             thresholds = clean_thresholds(DATA["settings"].get("thresholds"))
@@ -664,8 +769,9 @@ class App(SimpleHTTPRequestHandler):
                 # 不对外下发 ip：服务端看到的对端地址不等于节点公网 IP（反代/NAT/多出口下
                 # 都是错的），显示出去只会误导。原始值仍留在记录里，后台接口可见。
                 n.pop("ip", None)
-                # 多盘列表只有详情页用得到，列表接口不下发：200 节点 × 8 盘会白白撑大响应
+                # 多盘列表 / 块设备树只有详情页用得到，列表接口不下发（块设备树最多 64 条）
                 n.pop("disks", None)
+                n.pop("hdisks", None)
                 n["online"] = time.time() - n.get("updated", 0) < OFFLINE_SECONDS
                 # 只下发图表够用的点数：全量 1440 点 × 200 节点会把响应撑到十几 MB，
                 # 而图表宽度只有几百像素。

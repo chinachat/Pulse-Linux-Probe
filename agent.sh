@@ -313,6 +313,48 @@ done <<EOF_DISKS
 $disks_parsed
 EOF_DISKS
 _fields="${_fields:+$_fields,}\"disks\":[${_disks}]"
+# 硬件磁盘（块设备树）。df 只给"已挂载的文件系统"，看不出它落在哪块盘上 ——
+# 一块盘可能被拆成多个分区，也可能被 LVM / RAID / dm-crypt 盖住，df 里只看得见逻辑卷或阵列。
+# lsblk 能给出父子关系，服务端据此把文件系统归回物理盘。lsblk 缺失（极简系统）时留空，
+# 前端会退回"只显示文件系统"的视图。
+# -b 让 SIZE 直接是字节，省得再解析 K/M/G/T 单位；-P 输出 KEY="value" 形式，好解析。
+# 不按 name 去重：lsblk 会把多父设备（RAID 阵列）在每个成员下各列一次，
+# 这个重复正是"这块盘属于某个阵列"的唯一线索。
+hdisks_raw=$(timeout 5 lsblk -b -P -o NAME,TYPE,SIZE,MOUNTPOINT,PKNAME,MODEL,ROTA 2>/dev/null) || hdisks_raw=""
+_hdisks=""
+add_hdisk() {
+  local n t mo pn
+  n=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._:-')
+  t=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9')
+  test -n "$n" || return 0
+  test -n "$t" || return 0
+  mo=$(printf '%s' "$6" | tr -cd 'A-Za-z0-9 ._+()/-')
+  pn=$(printf '%s' "$5" | tr -cd 'A-Za-z0-9._:-')
+  _hdisks="${_hdisks:+$_hdisks,}{\"name\":\"$(json_escape "$n")\",\"type\":\"$(json_escape "$t")\""
+  _hdisks="${_hdisks},\"size\":$(num_or_zero "$3"),\"mount\":\"$(json_escape "$4")\""
+  _hdisks="${_hdisks},\"parent\":\"$(json_escape "$pn")\",\"model\":\"$(json_escape "$mo")\",\"rota\":$(num_or_zero "$7")}"
+}
+while IFS='|' read -r _hn _ht _hs _hm _hp _hmo _hr; do
+  add_hdisk "$_hn" "$_ht" "$_hs" "$_hm" "$_hp" "$_hmo" "$_hr"
+done <<EOF_HDISKS
+$(printf '%s\n' "$hdisks_raw" | awk '
+  {
+    line = $0
+    while (match(line, /[A-Z]+="[^"]*"/)) {
+      kv = substr(line, RSTART, RLENGTH)
+      line = substr(line, RSTART + RLENGTH)
+      k = kv; sub(/=.*/, "", k)
+      v = kv; sub(/^[^=]*="/, "", v); sub(/"$/, "", v)
+      val[k] = v
+    }
+    if (val["NAME"] != "") {
+      mnt = val["MOUNTPOINT"]; gsub(/\|/, "", mnt)      # | 是下面的字段分隔符
+      printf "%s|%s|%s|%s|%s|%s|%s\n", val["NAME"], val["TYPE"], val["SIZE"], mnt, val["PKNAME"], val["MODEL"], val["ROTA"]
+    }
+    delete val
+  }' 2>/dev/null | head -n 64)
+EOF_HDISKS
+_fields="${_fields:+$_fields,}\"hdisks\":[${_hdisks}]"
 printf '{%s}' "$_fields"
 EOF
 chmod 755 /usr/local/bin/linux-probe-payload

@@ -462,6 +462,7 @@ let _detailEnd = null;            // 窗口右端；null = 贴着现在
 let _detailExtent = { oldest: 0, newest: 0 };
 let _detailTimer = null;
 let _detailShownKey = null;       // 当前已渲染的 id:range:end，用来决定是否先用缓存顶一下
+let _detailView = null;           // 'detail' | 'events'：同一节点的两个页面共用一份数据
 const _detailCache = new Map();
 
 function cacheKey(id, range, end) {
@@ -510,24 +511,35 @@ function clock(ts) {
 
 function detailTimer() { return _detailTimer; }   // 测试用：确认关闭后没有遗留定时器
 
-function openDetail(id) {
+/* view = 'detail' | 'events'：事件日志单开一页，免得日志多时把详情页拉得很长。
+   两个页面共用同一个 _detailId 与同一份响应，来回切页不重新拉数据。 */
+function openDetail(id, view) {
+  const want = view === 'events' ? 'events' : 'detail';
   if (_detailId !== id) {
     _detailId = id;
     _detailData = null;
     _detailShownKey = null;
     _detailEnd = null;
+    _detailView = null;            // 换节点时强制重画
     ['#detail-head', '#detail-spec', '#detail-bars', '#detail-net-stats', '#detail-ping-row',
-     '#detail-events', '#detail-ifaces', '#detail-disks', '#detail-disk-table'].forEach(sel => {
+     '#detail-events-summary', '#detail-ifaces', '#detail-disks', '#detail-disk-table',
+     '#events-list', '#events-head'].forEach(sel => {
       const el = $(sel);
       if (el) { el.innerHTML = ''; el.hidden = false; }
     });
     $('#detail-title').textContent = '加载中…';
+    $('#events-title').textContent = '事件日志';
   }
   $('#dashboard').hidden = true;
   $('#admin-panel').hidden = true;
-  $('#node-detail').hidden = false;
+  $('#node-detail').hidden = want !== 'detail';
+  $('#node-events').hidden = want !== 'events';
+  _detailView = want;
   updateGroupNav();
+  updateDetailNav();
   window.scrollTo({ top: 0 });
+  // 同一节点在两个页面之间切换：手里已有数据就直接重画，切页是瞬时的
+  if (_detailData) renderDetail(_detailData);
   loadDetail();
   startDetailPolling();
 }
@@ -536,11 +548,14 @@ function closeDetail() {
   _detailId = null;
   _detailData = null;
   _detailShownKey = null;
+  _detailView = null;
   stopDetailPolling();
   $('#node-detail').hidden = true;
+  $('#node-events').hidden = true;
   // 后台面板如果开着，就别把仪表盘也显示出来
   if ($('#admin-panel').hidden) $('#dashboard').hidden = false;
   updateGroupNav();
+  updateDetailNav();
 }
 
 function startDetailPolling() {
@@ -615,20 +630,19 @@ function currentWindow() {
 function renderDetail(data) {
   const n = data.node || {};
   renderDetailHead(n);
+  renderEventsHead(n);
   renderDetailSpec(n);
   renderDetailLoad(data);
   renderDetailNet(n, data.history || []);
   renderDetailIfaces(n);
-  renderDetailDisks(n);
+  renderDetailDisks(data);
   renderDetailDiskAgg(data);
   renderDetailPing(data.ping_history || [], n);
   renderDetailEvents(data.events || []);
 }
 
-function renderDetailHead(n) {
-  $('#detail-title').textContent = n.name || n.hostname || '未命名节点';
-  const box = $('#detail-head');
-  box.innerHTML = '';
+/* 节点头部的一行字段：详情页和事件页共用，免得两处各写一份 */
+function detailHeadRow(n) {
   const row = document.createElement('div');
   row.className = 'detail-head-row';
   const loc = document.createElement('span');
@@ -652,7 +666,23 @@ function renderDetailHead(n) {
     w.append(l, v);
     row.append(w);
   });
-  box.append(row);
+  return row;
+}
+
+function renderDetailHead(n) {
+  $('#detail-title').textContent = n.name || n.hostname || '未命名节点';
+  const box = $('#detail-head');
+  box.innerHTML = '';
+  box.append(detailHeadRow(n));
+}
+
+function renderEventsHead(n) {
+  const title = $('#events-title');
+  if (title) title.textContent = (n.name || n.hostname || '未命名节点') + ' · 事件日志';
+  const box = $('#events-head');
+  if (!box) return;
+  box.innerHTML = '';
+  box.append(detailHeadRow(n));
 }
 
 function renderDetailSpec(n) {
@@ -867,8 +897,37 @@ const EVENT_KINDS = {
   offline: '离线', ping_timeout: '超时', ping_loss: '丢包', ping_slow: '延迟',
 };
 
+function eventRow(e) {
+  const row = document.createElement('div');
+  row.className = 'event ev-' + (EVENT_LEVELS[e.level] ? e.level : 'info');
+  const t = document.createElement('em');
+  t.textContent = clock(e.time);
+  const kind = document.createElement('span');
+  kind.className = 'ev-kind';
+  kind.textContent = EVENT_KINDS[e.kind] || e.kind || '事件';
+  const text = document.createElement('b');
+  text.textContent = e.text || '';
+  row.append(t, kind, text);
+  return row;
+}
+
+/* 详情页只放"摘要 + 最近几条"，完整列表在事件页（单开一页），
+   否则事件一多就会把详情页拉得极长。 */
 function renderDetailEvents(events) {
-  const box = $('#detail-events');
+  const list = $('#events-list');
+  if (list) {
+    list.innerHTML = '';
+    if (!events.length) {
+      const p = document.createElement('p');
+      p.className = 'hint';
+      p.textContent = '当前区间内没有触发任何阈值或异常。';
+      list.append(p);
+    } else {
+      events.forEach(e => list.append(eventRow(e)));
+    }
+  }
+
+  const box = $('#detail-events-summary');
   if (!box) return;
   box.innerHTML = '';
   if (!events.length) {
@@ -878,19 +937,37 @@ function renderDetailEvents(events) {
     box.append(p);
     return;
   }
-  events.forEach(e => {
-    const row = document.createElement('div');
-    row.className = 'event ev-' + (EVENT_LEVELS[e.level] ? e.level : 'info');
-    const t = document.createElement('em');
-    t.textContent = clock(e.time);
-    const kind = document.createElement('span');
-    kind.className = 'ev-kind';
-    kind.textContent = EVENT_KINDS[e.kind] || e.kind || '事件';
-    const text = document.createElement('b');
-    text.textContent = e.text || '';
-    row.append(t, kind, text);
-    box.append(row);
+  const counts = { error: 0, warn: 0, info: 0 };
+  events.forEach(e => { counts[EVENT_LEVELS[e.level] ? e.level : 'info'] += 1; });
+  const chips = document.createElement('div');
+  chips.className = 'event-counts';
+  ['error', 'warn', 'info'].forEach(lv => {
+    if (!counts[lv]) return;
+    const s = document.createElement('span');
+    s.className = 'ev-count ev-' + lv;
+    s.textContent = EVENT_LEVELS[lv] + ' ' + counts[lv];
+    chips.append(s);
   });
+  const total = document.createElement('span');
+  total.className = 'ev-count';
+  total.textContent = '共 ' + events.length + ' 条';
+  chips.append(total);
+  box.append(chips);
+
+  const recent = document.createElement('div');
+  recent.className = 'event-list';
+  events.slice(0, 3).forEach(e => recent.append(eventRow(e)));
+  box.append(recent);
+
+  if (events.length > 3) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'ghost small';
+    more.id = 'detail-events-more';
+    more.textContent = '查看全部 ' + events.length + ' 条';
+    more.onclick = () => { location.hash = '#/node/' + (_detailId || '') + '/events'; };
+    box.append(more);
+  }
 }
 
 /* ---------- 按接口快照 ---------- */
@@ -929,27 +1006,56 @@ function renderDetailIfaces(n) {
 }
 
 /* ---------- 多盘用量 ---------- */
-/* 摘要行按上报顺序（agent 按容量降序排）编号成 磁盘1 / 磁盘2 …，与下方挂载点表格逐行对应，
-   所以编号是稳定的，不会随使用率变化而跳号。挂载点明细放在表格里。 */
-function renderDetailDisks(n) {
+/* 摘要行 = 硬件磁盘，来自 lsblk 的块设备树（服务端已把文件系统归到所属物理盘上）。
+   挂载点表格 = df 看到的文件系统。两者不是一回事：
+     · 一块盘可以有多个分区 / 多个挂载点；
+     · LVM / RAID 会让多块物理盘只对应一个挂载点，此时单盘的"已用"没有唯一答案，
+       所以只标角色（LVM / RAID1…），不编造百分比。
+   没有 lsblk（老客户端或极简系统）时退回按文件系统展示，并明确标注出来。 */
+function renderDetailDisks(data) {
+  const n = (data && data.node) || {};
   const box = $('#detail-disks');
   const tbox = $('#detail-disk-table');
+  const hint = $('#detail-disks-hint');
+  const hw = Array.isArray(n.hardware_disks) ? n.hardware_disks : [];
   const list = Array.isArray(n.disks) ? n.disks : [];
+
   if (box) {
     box.innerHTML = '';
-    box.hidden = !list.length;
-    list.forEach((d, i) => {
-      const pct = Number(d.pct) || 0;
-      const chip = document.createElement('span');
-      chip.className = 'disk-chip' + (pct >= 90 ? ' bad' : pct >= 75 ? ' warn' : '');
-      const name = document.createElement('b');
-      name.textContent = '磁盘' + (i + 1);
-      const val = document.createElement('em');
-      val.textContent = bytes(d.total) + ' - ' + pct + '%';
-      chip.append(name, val);
-      box.append(chip);
-    });
+    box.hidden = !(hw.length || list.length);
+    if (hw.length) {
+      hw.forEach((d, i) => {
+        const has = d.pct !== null && d.pct !== undefined;
+        const pct = has ? Number(d.pct) : null;
+        const chip = document.createElement('span');
+        chip.className = 'disk-chip' +
+          (has ? (pct >= 90 ? ' bad' : pct >= 75 ? ' warn' : '') : ' role');
+        const name = document.createElement('b');
+        name.textContent = '磁盘' + (i + 1);
+        const val = document.createElement('em');
+        const bits = ['/dev/' + d.name, bytes(d.size), d.media].filter(Boolean);
+        val.textContent = bits.join(' · ') + ' - ' +
+          (has ? pct + '%' : (d.role ? String(d.role).toUpperCase() : '—'));
+        chip.append(name, val);
+        box.append(chip);
+      });
+      if (hint) hint.textContent = hw.length + ' 块物理磁盘';
+    } else {
+      list.forEach((d, i) => {
+        const pct = Number(d.pct) || 0;
+        const chip = document.createElement('span');
+        chip.className = 'disk-chip' + (pct >= 90 ? ' bad' : pct >= 75 ? ' warn' : '');
+        const name = document.createElement('b');
+        name.textContent = '文件系统' + (i + 1);
+        const val = document.createElement('em');
+        val.textContent = d.mount + ' · ' + bytes(d.total) + ' - ' + pct + '%';
+        chip.append(name, val);
+        box.append(chip);
+      });
+      if (hint) hint.textContent = '未取到块设备信息（lsblk 不可用或客户端较旧），此处按文件系统显示';
+    }
   }
+
   if (!tbox) return;
   tbox.innerHTML = '';
   tbox.hidden = !list.length;
@@ -957,21 +1063,21 @@ function renderDetailDisks(n) {
   const table = document.createElement('table');
   table.className = 'mini-table';
   const head = document.createElement('tr');
-  ['磁盘', '挂载点', '容量', '已用', '使用率'].forEach(h => {
+  ['挂载点', '容量', '已用', '使用率'].forEach(h => {
     const th = document.createElement('th');
     th.textContent = h;
     head.append(th);
   });
   table.append(head);
-  list.forEach((d, i) => {
+  list.forEach(d => {
     const tr = document.createElement('tr');
     const pct = Number(d.pct) || 0;
-    const cells = ['磁盘' + (i + 1), d.mount, bytes(d.total), bytes(d.used), pct + '%'];
+    const cells = [d.mount, bytes(d.total), bytes(d.used), pct + '%'];
     cells.forEach((v, k) => {
       const td = document.createElement('td');
       td.textContent = v;
       // 与丢包率同一套配色：≥90% 标红
-      if (k === 4 && pct >= 90) td.className = 'bad';
+      if (k === 3 && pct >= 90) td.className = 'bad';
       tr.append(td);
     });
     table.append(tr);
@@ -1201,13 +1307,31 @@ function panWindow(range, end, deltaT, oldest, newest) {
 
 /* ---------- 路由：只有 #/node/<id> 一种，其余一律回列表 ---------- */
 function route() {
-  const m = /^#\/node\/([0-9a-fA-F]{6,64})$/.exec(location.hash || '');
-  if (m) openDetail(m[1]);
+  // #/node/<id>            → 节点详情
+  // #/node/<id>/events     → 该节点的事件日志（单开一页）
+  const m = /^#\/node\/([0-9a-fA-F]{6,64})(?:\/(events))?$/.exec(location.hash || '');
+  if (m) openDetail(m[1], m[2] ? 'events' : 'detail');
   else closeDetail();
 }
 window.addEventListener('hashchange', route);
 
 $('#detail-back').onclick = () => { location.hash = ''; };
+$('#events-back').onclick = () => { location.hash = ''; };
+$('#events-todetail').onclick = () => { location.hash = '#/node/' + (_detailId || ''); };
+
+/* 侧边导航：分区跳转用 scrollIntoView 而不是 <a href="#...">——
+   本应用是 hash 路由，锚点链接会被 route() 当成未知 hash 而退回列表页。
+   顶栏是 sticky 的，所以各分区有 scroll-margin-top 抵消它的高度。 */
+document.querySelectorAll('#detail-nav [data-sec]').forEach(btn => {
+  btn.onclick = () => {
+    const el = document.getElementById(btn.dataset.sec);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+});
+$('#dn-events').onclick = () => { location.hash = '#/node/' + (_detailId || '') + '/events'; };
+$('#dn-todetail').onclick = () => { location.hash = '#/node/' + (_detailId || ''); };
+$('#dn-dashboard').onclick = () => { location.hash = ''; };
+$('#dn-top').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
 $('#detail-share').onclick = async () => {
   const btn = $('#detail-share');
@@ -1229,12 +1353,12 @@ $('#detail-share').onclick = async () => {
 
 /* ---------- 时间轴：预设区间 / 缩放 / 平移 / 框选 ---------- */
 function syncRangeButtons() {
-  document.querySelectorAll('#detail-range button').forEach(x => {
+  document.querySelectorAll('#detail-range button, #events-range button').forEach(x => {
     x.classList.toggle('active', Number(x.dataset.range) === _detailRange && _detailEnd == null);
   });
 }
 
-document.querySelectorAll('#detail-range button').forEach(btn => {
+document.querySelectorAll('#detail-range button, #events-range button').forEach(btn => {
   btn.onclick = () => {
     const range = Number(btn.dataset.range) || DETAIL_DEFAULT_RANGE;
     if (range === _detailRange && _detailEnd == null) return;
@@ -1602,6 +1726,23 @@ setInterval(() => {
 }, 10000);
 
 /* ---------- 右侧浮动导航（回到顶部 + 节点锚点） ---------- */
+/* 详情页 / 事件页的侧边导航：详情页显示分区跳转 + "事件日志 →"，
+   事件页则换成"← 节点详情"；两页都常驻 仪表盘 / 顶部 两个按钮。 */
+function updateDetailNav() {
+  const nav = $('#detail-nav');
+  if (!nav) return;
+  const onDetail = !$('#node-detail').hidden;
+  const onEvents = !$('#node-events').hidden;
+  nav.hidden = !(onDetail || onEvents);
+  if (nav.hidden) return;
+  const secs = $('#dn-secs');
+  if (secs) secs.hidden = !onDetail;
+  const toEvents = $('#dn-events');
+  if (toEvents) toEvents.hidden = !onDetail;
+  const toDetail = $('#dn-todetail');
+  if (toDetail) toDetail.hidden = !onEvents;
+}
+
 function updateGroupNav() {
   const nav = $('#group-nav');
   if ($('#dashboard').hidden) { nav.style.display = 'none'; return; }

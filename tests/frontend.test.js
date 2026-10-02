@@ -82,6 +82,12 @@ function loadApp() {
   });
   const rangeButtons = mkRange();
   const detailRangeButtons = mkRange();
+  const eventsRangeButtons = mkRange();
+  const navSecButtons = ['sec-spec', 'sec-load', 'sec-net', 'sec-ping'].map(s => {
+    const b = makeEl('button');
+    b.dataset.sec = s;
+    return b;
+  });
   const document = {
     body: makeEl('body'),
     activeElement: null,
@@ -89,6 +95,12 @@ function loadApp() {
     querySelectorAll: sel => {
       if (sel === '#ping-range button') return rangeButtons;
       if (sel === '#detail-range button') return detailRangeButtons;
+      if (sel === '#events-range button') return eventsRangeButtons;
+      // 详情页与事件页的区间按钮共用同一段逻辑，所以选择器是合并的
+      if (sel === '#detail-range button, #events-range button') {
+        return detailRangeButtons.concat(eventsRangeButtons);
+      }
+      if (sel === '#detail-nav [data-sec]') return navSecButtons;
       return [];
     },
     createElement: tag => makeEl(tag),
@@ -684,7 +696,7 @@ test('详情页：渲染事件日志（含等级与类型）', async () => {
   withFetch(ctx, sandbox, withEvents());
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
-  const rows = registry['#detail-events'].childNodes;
+  const rows = registry['#events-list'].childNodes;
   assert.strictEqual(rows.length, 3);
   assert.match(rows[0]._class, /ev-error/);
   assert.match(rows[1]._class, /ev-warn/);
@@ -700,10 +712,64 @@ test('详情页：没有事件时给出说明而不是空白', async () => {
   withFetch(ctx, sandbox, withEvents({ events: [] }));
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
-  const box = registry['#detail-events'];
+  const box = registry['#events-list'];
   assert.strictEqual(box.childNodes.length, 1);
   assert.match(box.childNodes[0]._class, /hint/);
   assert.match(box.childNodes[0].textContent, /没有触发任何阈值/);
+  // 详情页的摘要也同样给说明
+  const sum = registry['#detail-events-summary'];
+  assert.strictEqual(sum.childNodes.length, 1);
+  assert.match(sum.childNodes[0]._class, /hint/);
+});
+
+test('事件页：#/node/<id>/events 单开一页，详情页只留摘要', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, withEvents());
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}/events'; route();`, ctx);
+  await flush();
+  // 事件页可见、详情页隐藏，两边共用同一个节点
+  assert.strictEqual(registry['#node-events'].hidden, false);
+  assert.strictEqual(registry['#node-detail'].hidden, true);
+  assert.strictEqual(readGlobal(ctx, '_detailId'), NODE_ID);
+  // 完整事件在事件页；标题与头部带节点信息
+  assert.strictEqual(registry['#events-list'].childNodes.length, 3);
+  assert.match(registry['#events-title'].textContent, /hk-01/);
+  assert.strictEqual(registry['#events-head'].childNodes.length, 1);
+  // 侧栏换成"← 节点详情"，分区跳转与"事件日志→"收起
+  assert.strictEqual(registry['#detail-nav'].hidden, false);
+  assert.strictEqual(registry['#dn-secs'].hidden, true);
+  assert.strictEqual(registry['#dn-events'].hidden, true);
+  assert.strictEqual(registry['#dn-todetail'].hidden, false);
+});
+
+test('详情页：事件区只给计数 + 最近 3 条 + 查看全部', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  const now = Math.floor(Date.now() / 1000);
+  const many = Array.from({ length: 7 }, (_, i) => ({
+    time: now - i * 60, level: i < 2 ? 'error' : 'warn', kind: 'cpu', text: 'E' + i,
+  }));
+  withFetch(ctx, sandbox, withEvents({ events: many }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const box = registry['#detail-events-summary'];
+  const texts = box.childNodes[0].childNodes.map(c => c.textContent);
+  assert.ok(texts.some(t => /严重 2/.test(t)), texts.join(','));
+  assert.ok(texts.some(t => /共 7 条/.test(t)), texts.join(','));
+  assert.strictEqual(box.childNodes[1].childNodes.length, 3, '摘要只放最近 3 条');
+  assert.match(box.childNodes[2].textContent, /查看全部 7 条/);
+  // 完整 7 条在事件页容器里（切页即用，不用重新拉数据）
+  assert.strictEqual(registry['#events-list'].childNodes.length, 7);
+});
+
+test('导航：详情页显示分区跳转与事件入口；回到列表整块收起', async () => {
+  const { ctx, registry } = loadApp();
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  assert.strictEqual(registry['#detail-nav'].hidden, false);
+  assert.strictEqual(registry['#dn-secs'].hidden, false);
+  assert.strictEqual(registry['#dn-events'].hidden, false);
+  assert.strictEqual(registry['#dn-todetail'].hidden, true);
+  vm.runInContext("location.hash = ''; route();", ctx);
+  assert.strictEqual(registry['#detail-nav'].hidden, true);
 });
 
 test('详情页：按接口表格（错误/丢包标红）', async () => {
@@ -734,42 +800,61 @@ test('详情页：没有接口数据时整块收起', async () => {
   assert.strictEqual(registry['#detail-ifaces'].hidden, true);
 });
 
-test('详情页：磁盘摘要按容量降序编号，表格逐行对应并标红 ≥90%', async () => {
+test('详情页：摘要行是硬件磁盘（含 LVM/RAID 角色），表格只列挂载点', async () => {
   const { ctx, registry, sandbox } = loadApp();
   withFetch(ctx, sandbox, detailPayload({
+    // df：文件系统（挂载点维度）
     disks: [
-      // agent 按容量降序上报，所以编号顺序 = 这个数组的顺序
-      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },   // 磁盘1
-      { mount: '/', total: 1e11, used: 4e10, pct: 40 },         // 磁盘2
-      { mount: '/boot', total: 1e9, used: 1e8, pct: 12 },       // 磁盘3
+      { mount: '/', total: 1e11, used: 4e10, pct: 40 },
+      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
+    ],
+    // lsblk：物理盘（服务端已把文件系统归到所属盘上）
+    hardware_disks: [
+      { name: 'sda', size: 5e11, model: 'Samsung SSD 870', media: 'SSD',
+        role: '', mounts: 1, used: 4e10, total: 1e11, pct: 40 },
+      { name: 'sdb', size: 2e12, model: 'WDC WD20EFAX', media: 'HDD',
+        role: 'lvm', mounts: 1, used: null, total: null, pct: null },
     ],
   }));
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
 
-  // 摘要行：磁盘1 容量 - 已用%
   const chips = registry['#detail-disks'].childNodes;
-  assert.strictEqual(chips.length, 3);
-  assert.deepStrictEqual(plain(chips.map(c => c.childNodes[0].textContent)),
-    ['磁盘1', '磁盘2', '磁盘3']);
-  assert.match(chips[0].childNodes[1].textContent, /^[\d.]+ [KMGT]?B - 95%$/);
-  assert.match(chips[1].childNodes[1].textContent, /- 40%$/);
-  assert.match(chips[0]._class, /bad/);                       // 95% 标红
-  assert.strictEqual(chips[1]._class, 'disk-chip');           // 40% 不标
-  assert.strictEqual(chips[2]._class, 'disk-chip');           // 12% 不标
+  assert.strictEqual(chips.length, 2);
+  assert.strictEqual(chips[0].childNodes[0].textContent, '磁盘1');
+  assert.match(chips[0].childNodes[1].textContent, /^\/dev\/sda · [\d.]+ [KMGT]?B · SSD - 40%$/);
+  assert.strictEqual(chips[0]._class, 'disk-chip');
+  // LVM 承载盘：标角色而不是编造百分比
+  assert.strictEqual(chips[1].childNodes[0].textContent, '磁盘2');
+  assert.match(chips[1].childNodes[1].textContent, /^\/dev\/sdb · [\d.]+ [KMGT]?B · HDD - LVM$/);
+  assert.match(chips[1]._class, /role/);
+  assert.match(registry['#detail-disks-hint'].textContent, /2 块物理磁盘/);
 
-  // 挂载点表格：磁盘 / 挂载点 / 容量 / 已用 / 使用率，行序与摘要编号一致
+  // 挂载点表格：只有 挂载点 / 容量 / 已用 / 使用率，没有"磁盘"列
   const table = registry['#detail-disk-table'].childNodes[0];
-  const rows = table.childNodes.slice(1);    // 第 0 个是表头
-  assert.strictEqual(rows.length, 3);
-  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[0].textContent)),
-    ['磁盘1', '磁盘2', '磁盘3']);
-  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[1].textContent)),
-    ['/data', '/', '/boot']);
-  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[4].textContent)),
-    ['95%', '40%', '12%']);
-  assert.strictEqual(rows[0].childNodes[4]._class, 'bad');   // 95% 标红
-  assert.strictEqual(rows[1].childNodes[4]._class, '');
+  assert.strictEqual(table.childNodes[0].childNodes.length, 4);
+  const rows = table.childNodes.slice(1);
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[0].textContent)), ['/', '/data']);
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[3].textContent)), ['40%', '95%']);
+  assert.strictEqual(rows[0].childNodes[3]._class, '');
+  assert.strictEqual(rows[1].childNodes[3]._class, 'bad');    // 95% 标红
+});
+
+test('详情页：没有 lsblk 数据时退回文件系统视图，并标注出来', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  withFetch(ctx, sandbox, detailPayload({
+    disks: [
+      { mount: '/', total: 1e11, used: 4e10, pct: 40 },
+      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
+    ],
+  }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const chips = registry['#detail-disks'].childNodes;
+  assert.strictEqual(chips.length, 2);
+  assert.strictEqual(chips[0].childNodes[0].textContent, '文件系统1');
+  assert.match(chips[0].childNodes[1].textContent, /^\/ · /);
+  assert.match(registry['#detail-disks-hint'].textContent, /lsblk/);
 });
 
 test('详情页：总负载率曲线用 disk_agg；老样本退回根盘 disk', async () => {

@@ -781,6 +781,102 @@ class RegressionTest(unittest.TestCase):
         hist = json.loads(raw)["history"]
         self.assertEqual(hist[-1]["disk_agg"], 33.0)
 
+    def test_18_hardware_disks_from_lsblk_tree(self):
+        """df 是文件系统、lsblk 才是硬件盘：验证服务端能把两者对上。"""
+        key = make_key(self.base, self.admin, "hd")["key"]
+        gib = 1073741824
+        payload = {
+            "hostname": "hd-node", "cpu": 1, "disk": 40,
+            # df 看到的（agent 已按设备去重）：只有挂载点和用量
+            "disks": [
+                {"mount": "/", "total": 100 * gib, "used": 40 * gib, "pct": 40},
+                {"mount": "/home", "total": 365 * gib, "used": 328.5 * gib, "pct": 90},
+                {"mount": "/data", "total": 1250 * gib, "used": 1150 * gib, "pct": 92},
+                {"mount": "/mnt/raid", "total": 2000 * gib, "used": 800 * gib, "pct": 40},
+                {"mount": "/var/lib/docker", "total": 1000 * gib, "used": 700 * gib, "pct": 70},
+                {"mount": "/srv", "total": 400 * gib, "used": 100 * gib, "pct": 25},
+            ],
+            # lsblk 看到的块设备树。md0 出现两次（两个成员各一次）是有意的。
+            "hdisks": [
+                {"name": "sda", "type": "disk", "size": 465.8 * gib, "mount": "", "parent": "",
+                 "model": "Samsung SSD 870", "rota": 0},
+                {"name": "sda1", "type": "part", "size": 100 * gib, "mount": "/", "parent": "sda"},
+                {"name": "sda2", "type": "part", "size": 365 * gib, "mount": "/home", "parent": "sda"},
+                {"name": "sdb", "type": "disk", "size": 1863 * gib, "mount": "", "parent": "",
+                 "model": "WDC WD20EFAX", "rota": 1},
+                {"name": "sdb1", "type": "part", "size": 1863 * gib, "mount": "", "parent": "sdb"},
+                {"name": "vg0-lv_data", "type": "lvm", "size": 500 * gib, "mount": "/data",
+                 "parent": "sdb1"},
+                {"name": "sdc", "type": "disk", "size": 1863 * gib, "mount": "", "parent": "",
+                 "model": "WDC WD20EFAX", "rota": 1},
+                {"name": "sdc1", "type": "part", "size": 1863 * gib, "mount": "", "parent": "sdc"},
+                {"name": "sdd", "type": "disk", "size": 1863 * gib, "mount": "", "parent": "",
+                 "model": "WDC WD20EFAX", "rota": 1},
+                {"name": "sdd1", "type": "part", "size": 1863 * gib, "mount": "", "parent": "sdd"},
+                # RAID1：同一个阵列在两个成员下各出现一次
+                {"name": "md0", "type": "raid1", "size": 1863 * gib, "mount": "/mnt/raid",
+                 "parent": "sdc1"},
+                {"name": "md0", "type": "raid1", "size": 1863 * gib, "mount": "/mnt/raid",
+                 "parent": "sdd1"},
+                {"name": "nvme0n1", "type": "disk", "size": 931.5 * gib, "mount": "", "parent": "",
+                 "model": "Samsung 980", "rota": 0},
+                {"name": "nvme0n1p1", "type": "part", "size": 931.5 * gib,
+                 "mount": "/var/lib/docker", "parent": "nvme0n1"},
+                {"name": "sde", "type": "disk", "size": 400 * gib, "mount": "/srv", "parent": "",
+                 "model": "Kingston A400", "rota": 0},
+            ],
+        }
+        _, _, raw = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        body = json.loads(raw)
+        hd = body["node"]["hardware_disks"]
+
+        # 6 块物理盘，顺序按 lsblk（内核设备序）；分区 / 逻辑卷 / 阵列都不是"磁盘"
+        self.assertEqual([d["name"] for d in hd], ["sda", "sdb", "sdc", "sdd", "nvme0n1", "sde"])
+        self.assertNotIn("sda1", [d["name"] for d in hd])
+        self.assertNotIn("vg0-lv_data", [d["name"] for d in hd])
+        self.assertNotIn("md0", [d["name"] for d in hd])
+
+        by = {d["name"]: d for d in hd}
+        # 一块盘的两个分区合起来算（/ + /home = 40+328.5 GiB / 465 GiB）
+        self.assertEqual(by["sda"]["media"], "SSD")
+        self.assertEqual(by["sda"]["mounts"], 2)
+        self.assertAlmostEqual(by["sda"]["total"], 465 * gib, places=3)
+        self.assertAlmostEqual(by["sda"]["pct"], 79.2, places=1)
+        # LVM 承载盘：角色标出来，但不编造"已用"
+        self.assertEqual(by["sdb"]["role"], "lvm")
+        self.assertIsNone(by["sdb"]["pct"])
+        self.assertEqual(by["sdb"]["media"], "HDD")
+        # RAID1 的两个成员都要认出来（靠 md0 的重复行）
+        self.assertEqual(by["sdc"]["role"], "raid1")
+        self.assertEqual(by["sdd"]["role"], "raid1")
+        self.assertIsNone(by["sdc"]["pct"])
+        self.assertIsNone(by["sdd"]["pct"])
+        # 单分区直挂
+        self.assertEqual(by["nvme0n1"]["pct"], 70.0)
+        # 整块盘直接挂文件系统（无分区）
+        self.assertEqual(by["sde"]["pct"], 25.0)
+        # 原始块设备树不下发给前端（自己用），列表接口也不下发硬件盘视图
+        self.assertNotIn("hdisks", body["node"])
+        _, _, raw = http(self.base, "GET", "/api/nodes")
+        for n in json.loads(raw)["nodes"]:
+            self.assertNotIn("hdisks", n)
+            self.assertNotIn("disks", n)
+
+    def test_19_no_lsblk_falls_back_to_empty(self):
+        """老客户端 / 没有 lsblk 的机器：不上报 hdisks 时硬件盘视图为空，前端据此退回文件系统视图。"""
+        key = make_key(self.base, self.admin, "hd0")["key"]
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "nolsblk", "cpu": 1,
+                          "disks": [{"mount": "/", "total": 100, "used": 50, "pct": 50}]},
+                         {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        node = json.loads(raw)["node"]
+        self.assertEqual(node["hardware_disks"], [])
+        self.assertEqual(len(node["disks"]), 1)   # 文件系统视图仍在
+
 
 class DataFileMigrationTest(unittest.TestCase):
     """v1 容器（裸 SHA-256 密钥）必须能读，并在下一次保存时自动升级成 v2（PBKDF2）。"""

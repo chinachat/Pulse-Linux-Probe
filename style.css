@@ -192,6 +192,9 @@ button {
 }
 button:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 button:active { transform: translateY(0); }
+/* 上面给 button 设了 display:inline-flex，优先级高于浏览器默认的 [hidden]{display:none}，
+   于是 <button hidden> 照样会显示。补这一条，免得以后用 hidden 藏按钮时踩坑。 */
+button[hidden] { display: none; }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -615,6 +618,18 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 #node-detail .hint a { color: var(--accent); }
 
 /* ---------- 事件日志 ---------- */
+/* 详情页只放计数 + 最近几条，完整列表在 #/node/<id>/events 单独一页 */
+.event-summary { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.event-counts { display: flex; gap: 8px; flex-wrap: wrap; }
+.ev-count {
+  font: 600 11px var(--font-sans);
+  padding: 2px 9px;
+  border-radius: 20px;
+  background: var(--bar-bg);
+  color: var(--muted);
+}
+.ev-count.ev-error { background: rgba(var(--danger-rgb), .14); color: var(--danger); }
+.ev-count.ev-warn { background: rgba(var(--warn-rgb), .14); color: var(--warn); }
 .event-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 .event {
   display: flex;
@@ -720,6 +735,53 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 .empty-state p { margin: 4px 0; font-size: 13px; }
 
 /* ---------- 侧边分组导航 ---------- */
+/* 详情页 / 事件页的侧边导航与 #group-nav 同一套外观，但按钮是分区跳转而不是节点锚点。
+   分区跳转要抵消 sticky 顶栏的高度，否则 scrollIntoView 会把小节标题压在栏下面。 */
+.panel[id^="sec-"] { scroll-margin-top: 76px; }
+#detail-nav {
+  position: fixed;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 100;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: var(--shadow);
+  min-width: 112px;
+}
+/* display:flex 会盖掉 hidden 属性，必须显式处理 */
+#detail-nav[hidden], #detail-nav .dn-group[hidden] { display: none; }
+#detail-nav .dn-group { display: flex; flex-direction: column; gap: 2px; }
+#detail-nav .dn-group + .dn-group {
+  border-top: 1px dashed var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+#detail-nav button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  padding: 6px 9px;
+  border-radius: var(--radius-xs);
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+#detail-nav button:hover { background: var(--soft); color: var(--accent); }
+#detail-nav .dn-bottom button { text-align: center; }
+/* 窄屏：侧栏会压住内容，收起（页面顶部本来就有返回按钮） */
+@media (max-width: 900px) {
+  #detail-nav { display: none; }
+}
 #group-nav {
   position: fixed;
   right: 14px;
