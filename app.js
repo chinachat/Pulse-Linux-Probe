@@ -271,10 +271,12 @@ document.querySelectorAll('#ping-range button').forEach(btn => {
 
 /* ---------- 负载曲线（CPU / 内存 / 磁盘，全部是 0-100 的百分比） ---------- */
 /* 注意：百分比里 0 是有效值（磁盘可能真的是 0%），不像延迟那样能把 0 当"没数据"过滤掉 */
+/* 颜色一律从 CSS 变量取，深色主题才能换一套低饱和的暖色（见 style.css 的 body.dark）。
+   fallback 只在变量缺失时兜底，正常情况下用不到。 */
 const LOAD_SERIES = [
-  { key: 'cpu', color: '#10b981' },
-  { key: 'memory', color: '#38bdf8' },
-  { key: 'disk', color: '#f59e0b' },
+  { key: 'cpu', cssVar: '--load-cpu', fallback: '#10b981' },
+  { key: 'memory', cssVar: '--load-mem', fallback: '#38bdf8' },
+  { key: 'disk', cssVar: '--load-disk', fallback: '#f59e0b' },
 ];
 
 function pctLines(svg, samples, series, height = 96) {
@@ -288,55 +290,15 @@ function pctLines(svg, samples, series, height = 96) {
     html += `<line x1="0" y1="${py(v).toFixed(1)}" x2="${w}" y2="${py(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="3"/>`;
   });
   html += `<line x1="0" y1="${py(0).toFixed(1)}" x2="${w}" y2="${py(0).toFixed(1)}" stroke="var(--line)"/>`;
-  series.forEach(({ key, color }) => {
+  const cs = getComputedStyle(document.body);
+  series.forEach(({ key, color, cssVar, fallback }) => {
+    const stroke = cssVar ? (cs.getPropertyValue(cssVar).trim() || fallback) : color;
     const pts = samples.map((s, i) => [xs[i], py(s[key])]);
     if (!pts.length) return;
     const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
-    html += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+    html += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
   });
   svg.innerHTML = html;
-  const axis = svg.parentElement.querySelector('.y-axis');
-  if (axis) {
-    const sp = axis.querySelectorAll('span');
-    if (sp[0]) sp[0].textContent = '100%';
-    if (sp[1]) sp[1].textContent = '50%';
-    if (sp[2]) sp[2].textContent = '0';
-  }
-}
-
-/* ---------- 内存构成（已用 + buff/cache 堆叠，同样按总量的百分比画） ---------- */
-function memChart(svg, samples, total, height = 80) {
-  const w = 600, h = height, pad = 4;
-  svg.innerHTML = '';
-  if (!samples.length) return;
-  const xs = xPositions(samples, w);
-  const py = v => h - pad - Math.min(Math.max(v, 0), 100) / 100 * (h - pad * 2);
-  const cs = getComputedStyle(document.body);
-  const usedColor = (cs.getPropertyValue('--mem-used') || '#38bdf8').trim();
-  const cachedColor = (cs.getPropertyValue('--mem-cached') || '#a78bfa').trim();
-  const totalBytes = Number(total) || 0;
-  // 已用是服务端算好的百分比；缓存是字节数，要按总量换算
-  const usedPct = s => Math.min(Math.max(Number(s.memory) || 0, 0), 100);
-  const cachedPct = s => {
-    if (totalBytes <= 0) return 0;
-    const c = (Number(s.mem_cached) || 0) / totalBytes * 100;
-    return Math.min(Math.max(c, 0), 100 - usedPct(s));
-  };
-  const bot = samples.map((s, i) => [xs[i], py(usedPct(s))]);
-  const top = samples.map((s, i) => [xs[i], py(usedPct(s) + cachedPct(s))]);
-  const line = (pts, first) => pts.map((p, i) => (i || first ? 'L' : 'M') +
-    p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('');
-  const baseY = py(0).toFixed(1);
-  const last = arr => arr[arr.length - 1];
-  // 缓存层：上边界正向 + 下边界反向闭合；已用层：下边界到 0 闭合
-  const cachedArea = line(top, 1) +
-    bot.slice().reverse().map(p => `L${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join('') + 'Z';
-  const usedArea = line(bot, 1) +
-    `L${last(bot)[0].toFixed(1)} ${baseY}L${bot[0][0].toFixed(1)} ${baseY}Z`;
-  svg.innerHTML =
-    `<path d="${cachedArea}" fill="${cachedColor}" fill-opacity=".45" stroke="none"/>` +
-    `<path d="${usedArea}" fill="${usedColor}" fill-opacity=".5" stroke="none"/>` +
-    `<line x1="0" y1="${baseY}" x2="${w}" y2="${baseY}" stroke="var(--line)"/>`;
   const axis = svg.parentElement.querySelector('.y-axis');
   if (axis) {
     const sp = axis.querySelectorAll('span');
@@ -364,9 +326,9 @@ function createCard(n, container) {
     const fill = x.querySelector('.bar-fill');
     fill.style.width = '0%';
     requestAnimationFrame(() => { fill.style.width = v + '%'; });
-    fill.style.background = v > 80 ? 'linear-gradient(90deg,#ef4444,#f87171)'
-      : v > 60 ? 'linear-gradient(90deg,#eab308,#facc15)'
-      : 'linear-gradient(90deg,#10b981,#34d399)';
+    fill.style.background = v > 80 ? 'linear-gradient(90deg,var(--bar-hot-1),var(--bar-hot-2))'
+      : v > 60 ? 'linear-gradient(90deg,var(--bar-mid-1),var(--bar-mid-2))'
+      : 'linear-gradient(90deg,var(--bar-ok-1),var(--bar-ok-2))';
     x.querySelector('b').textContent = v + '%';
     x.querySelector('small').textContent = [n.cpu_cores ? n.cpu_cores + '核' : '', bytes(n.mem_total), bytes(n.disk_total)][i];
   });
@@ -779,9 +741,9 @@ function renderDetailLoad(data) {
     const fill = document.createElement('div');
     fill.className = 'bar-fill';
     fill.style.width = v + '%';
-    fill.style.background = v > 80 ? 'linear-gradient(90deg,#ef4444,#f87171)'
-      : v > 60 ? 'linear-gradient(90deg,#eab308,#facc15)'
-      : 'linear-gradient(90deg,#10b981,#34d399)';
+    fill.style.background = v > 80 ? 'linear-gradient(90deg,var(--bar-hot-1),var(--bar-hot-2))'
+      : v > 60 ? 'linear-gradient(90deg,var(--bar-mid-1),var(--bar-mid-2))'
+      : 'linear-gradient(90deg,var(--bar-ok-1),var(--bar-ok-2))';
     track.append(fill);
     const b = document.createElement('b');
     b.textContent = v + '%';
@@ -792,10 +754,7 @@ function renderDetailLoad(data) {
   if (hint) hint.textContent = PING_RANGE_LABELS[_detailRange] || '';
   const loadSvg = document.querySelector('#node-detail .load-svg');
   if (!chartPlaceholder(loadSvg, samples)) pctLines(loadSvg, samples, LOAD_SERIES, 96);
-  const memSvg = document.querySelector('#node-detail .mem-svg');
-  if (!chartPlaceholder(memSvg, samples)) memChart(memSvg, samples, n.mem_total, 80);
   renderTimeAxis(document.querySelector('#node-detail .load-xaxis'), samples);
-  renderTimeAxis(document.querySelector('#node-detail .mem-xaxis'), samples);
 }
 
 function renderDetailNet(n, samples) {
@@ -1117,7 +1076,8 @@ function carrierLossChart(svg, samples = [], key = 'ct', height = 10) {
 }
 
 /* ---------- 详情页：延迟折线 + 丢包条 + 时间轴缩放的刻度 ---------- */
-const CARRIERS = [['ct', '电信', '#2979FF'], ['cu', '联通', '#E64A19'], ['cm', '移动', '#00C853']];
+/* 三网颜色不再在这里硬编码：pingChart() 直接从 --ping-ct/cu/cm 读，深色主题才能换成低饱和版本。
+   （原先这里还有个同内容的 CARRIERS 常量，全文件无人引用，已删除。） */
 
 /* 刻度步长：跨度越大格子越粗。
    一律对齐到本地整点（而不是 UTC 整点），否则半小时时区（如印度 +5:30）

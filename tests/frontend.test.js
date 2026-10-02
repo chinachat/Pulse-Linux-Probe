@@ -429,11 +429,9 @@ test('详情页：渲染规格 / 负载 / 网络 / 延迟各区块', async () =>
   assert.match(spec, /kvm 虚拟化/);
   assert.match(spec, /L3 35840 KB/);
 
-  // 三条负载曲线 + 上下两条内存堆叠面积
+  // 三条负载曲线（内存构成图已移除，不再断言）
   const loadSvg = registry['#node-detail .load-svg']._html;
   assert.strictEqual((loadSvg.match(/<path /g) || []).length, 3);
-  const memSvg = registry['#node-detail .mem-svg']._html;
-  assert.strictEqual((memSvg.match(/<path /g) || []).length, 2);
 
   // 网络统计与延迟图
   const net = registry['#detail-net-stats'].childNodes
