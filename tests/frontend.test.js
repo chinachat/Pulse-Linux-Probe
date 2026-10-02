@@ -734,36 +734,65 @@ test('详情页：没有接口数据时整块收起', async () => {
   assert.strictEqual(registry['#detail-ifaces'].hidden, true);
 });
 
-test('详情页：多盘列表按使用率降序渲染，≥90% 标红', async () => {
+test('详情页：磁盘摘要按容量降序编号，表格逐行对应并标红 ≥90%', async () => {
   const { ctx, registry, sandbox } = loadApp();
   withFetch(ctx, sandbox, detailPayload({
     disks: [
-      { mount: '/', total: 1e11, used: 4e10, pct: 40 },
-      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
-      { mount: '/boot', total: 1e9, used: 1e8, pct: 12 },
+      // agent 按容量降序上报，所以编号顺序 = 这个数组的顺序
+      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },   // 磁盘1
+      { mount: '/', total: 1e11, used: 4e10, pct: 40 },         // 磁盘2
+      { mount: '/boot', total: 1e9, used: 1e8, pct: 12 },       // 磁盘3
     ],
   }));
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
-  const box = registry['#detail-disks'];
-  const table = box.childNodes[0];
-  const rows = table.childNodes.slice(1);            // 第 0 个是表头
+
+  // 摘要行：磁盘1 容量 - 已用%
+  const chips = registry['#detail-disks'].childNodes;
+  assert.strictEqual(chips.length, 3);
+  assert.deepStrictEqual(plain(chips.map(c => c.childNodes[0].textContent)),
+    ['磁盘1', '磁盘2', '磁盘3']);
+  assert.match(chips[0].childNodes[1].textContent, /^[\d.]+ [KMGT]?B - 95%$/);
+  assert.match(chips[1].childNodes[1].textContent, /- 40%$/);
+  assert.match(chips[0]._class, /bad/);                       // 95% 标红
+  assert.strictEqual(chips[1]._class, 'disk-chip');           // 40% 不标
+  assert.strictEqual(chips[2]._class, 'disk-chip');           // 12% 不标
+
+  // 挂载点表格：磁盘 / 挂载点 / 容量 / 已用 / 使用率，行序与摘要编号一致
+  const table = registry['#detail-disk-table'].childNodes[0];
+  const rows = table.childNodes.slice(1);    // 第 0 个是表头
   assert.strictEqual(rows.length, 3);
-  // 最紧张的盘排在最前
-  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[0].textContent)), ['/data', '/', '/boot']);
-  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[3].textContent)), ['95%', '40%', '12%']);
-  assert.strictEqual(rows[0].childNodes[3]._class, 'bad');   // 95% 标红
-  assert.strictEqual(rows[1].childNodes[3]._class, '');      // 40% 不标
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[0].textContent)),
+    ['磁盘1', '磁盘2', '磁盘3']);
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[1].textContent)),
+    ['/data', '/', '/boot']);
+  assert.deepStrictEqual(plain(rows.map(r => r.childNodes[4].textContent)),
+    ['95%', '40%', '12%']);
+  assert.strictEqual(rows[0].childNodes[4]._class, 'bad');   // 95% 标红
+  assert.strictEqual(rows[1].childNodes[4]._class, '');
 });
 
-test('详情页：没有多盘数据时整块收起', async () => {
+test('详情页：总负载率曲线用 disk_agg；老样本退回根盘 disk', async () => {
+  const { ctx, registry, sandbox } = loadApp();
+  // detailPayload 的历史样本只有 disk（根盘 55%），没有 disk_agg → 应走兜底
+  withFetch(ctx, sandbox, detailPayload({
+    disks: [{ mount: '/', total: 1e11, used: 4e10, pct: 40 }],
+  }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+  await flush();
+  const html = registry['#node-detail .diskagg-svg']._html;
+  assert.match(html, /<path /, '总负载率曲线应画出来');
+  assert.match(registry['#detail-diskagg-hint'].textContent, /当前 55%/);
+});
+
+test('详情页：没有多盘数据时摘要与表格都收起', async () => {
   const { ctx, registry, sandbox } = loadApp();
   withFetch(ctx, sandbox, withEvents());
   vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
   await flush();
-  const box = registry['#detail-disks'];
-  assert.strictEqual(box.hidden, true);
-  assert.strictEqual((box.childNodes || []).length, 0);
+  assert.strictEqual(registry['#detail-disks'].hidden, true);
+  assert.strictEqual((registry['#detail-disks'].childNodes || []).length, 0);
+  assert.strictEqual(registry['#detail-disk-table'].hidden, true);
 });
 
 test('详情页：缓存命中时同步先画出来，再拉最新数据', async () => {

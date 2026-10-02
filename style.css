@@ -646,6 +646,25 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 
 /* ---------- 表格（按接口 / 采样明细） ---------- */
 .iface-wrap { margin-top: 12px; }
+/* 磁盘摘要：磁盘1  容量 - 已用%  （≥75% 琥珀、≥90% 红） */
+.disk-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.disk-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--card-2);
+  font: 11px var(--font-sans);
+  color: var(--muted);
+}
+.disk-chip b { font-weight: 600; color: var(--text); }
+.disk-chip em { font-style: normal; font-family: var(--font-mono); }
+.disk-chip.warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.disk-chip.warn em { color: var(--warn); }
+.disk-chip.bad { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+.disk-chip.bad em { color: var(--danger); }
 .table-wrap { overflow-x: auto; margin-top: 8px; }
 .mini-table { width: 100%; border-collapse: collapse; font: 12px var(--font-mono); }
 .mini-table th {

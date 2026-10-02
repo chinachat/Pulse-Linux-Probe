@@ -160,6 +160,19 @@ def sanitize_disks(raw):
                     "pct": clamp_num(item.get("pct"), 0.0, 100.0)})
     return out
 
+def aggregate_disk_pct(clean):
+    """总负载率 = 所有已上报磁盘的「已用合计 / 容量合计」。
+
+    agent 已按设备去重，所以同一个物理盘重复挂载不会重复计入。
+    老客户端不上报 disks 时退回根盘的 disk 值，行为与旧版一致。
+    """
+    disks = clean.get("disks") or []
+    total = sum(d.get("total", 0.0) for d in disks)
+    used = sum(d.get("used", 0.0) for d in disks)
+    if total > 0:
+        return round(min(max(used / total * 100.0, 0.0), 100.0), 2)
+    return clamp_num(clean.get("disk"), 0.0, 100.0)
+
 def valid_ping_target(value):
     if not value:
         return True  # 空值 = 清空该运营商目标
@@ -780,6 +793,9 @@ class App(SimpleHTTPRequestHandler):
                 sample = {"time": now}
                 for field, key in HISTORY_SAMPLE_FIELDS:
                     sample[key] = clean.get(field, 0)
+                # 多盘总负载率入历史，才能画成时间曲线。
+                # 老样本没有这个键，前端按同一条样本里的 disk（根盘）兜底。
+                sample["disk_agg"] = aggregate_disk_pct(clean)
                 history = (old.get("history", []) + [sample])[-LOAD_HISTORY_LIMIT:]
                 ping_sample = {"time": now, "ct": clean.get("tcp_ping_ct", 0), "cu": clean.get("tcp_ping_cu", 0), "cm": clean.get("tcp_ping_cm", 0)}
                 ping_history = (old.get("ping_history", []) + [ping_sample])[-PING_HISTORY_LIMIT:]

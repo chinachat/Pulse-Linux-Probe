@@ -517,7 +517,7 @@ function openDetail(id) {
     _detailShownKey = null;
     _detailEnd = null;
     ['#detail-head', '#detail-spec', '#detail-bars', '#detail-net-stats', '#detail-ping-row',
-     '#detail-events', '#detail-ifaces', '#detail-disks'].forEach(sel => {
+     '#detail-events', '#detail-ifaces', '#detail-disks', '#detail-disk-table'].forEach(sel => {
       const el = $(sel);
       if (el) { el.innerHTML = ''; el.hidden = false; }
     });
@@ -620,6 +620,7 @@ function renderDetail(data) {
   renderDetailNet(n, data.history || []);
   renderDetailIfaces(n);
   renderDetailDisks(n);
+  renderDetailDiskAgg(data);
   renderDetailPing(data.ping_history || [], n);
   renderDetailEvents(data.events || []);
 }
@@ -927,42 +928,76 @@ function renderDetailIfaces(n) {
   box.append(table);
 }
 
-/* ---------- 多盘用量快照 ---------- */
-/* 与"按接口"同样是列表型数据：只存当前值、不进历史（曲线与告警阈值仍只针对根盘 /）。
-   服务端已按白名单重建过，这里只负责展示，并按使用率降序排，最紧张的盘排在最前。 */
+/* ---------- 多盘用量 ---------- */
+/* 摘要行按上报顺序（agent 按容量降序排）编号成 磁盘1 / 磁盘2 …，与下方挂载点表格逐行对应，
+   所以编号是稳定的，不会随使用率变化而跳号。挂载点明细放在表格里。 */
 function renderDetailDisks(n) {
   const box = $('#detail-disks');
-  if (!box) return;
-  box.innerHTML = '';
+  const tbox = $('#detail-disk-table');
   const list = Array.isArray(n.disks) ? n.disks : [];
-  if (!list.length) {
-    box.hidden = true;
-    return;
+  if (box) {
+    box.innerHTML = '';
+    box.hidden = !list.length;
+    list.forEach((d, i) => {
+      const pct = Number(d.pct) || 0;
+      const chip = document.createElement('span');
+      chip.className = 'disk-chip' + (pct >= 90 ? ' bad' : pct >= 75 ? ' warn' : '');
+      const name = document.createElement('b');
+      name.textContent = '磁盘' + (i + 1);
+      const val = document.createElement('em');
+      val.textContent = bytes(d.total) + ' - ' + pct + '%';
+      chip.append(name, val);
+      box.append(chip);
+    });
   }
-  box.hidden = false;
+  if (!tbox) return;
+  tbox.innerHTML = '';
+  tbox.hidden = !list.length;
+  if (!list.length) return;
   const table = document.createElement('table');
   table.className = 'mini-table';
   const head = document.createElement('tr');
-  ['挂载点', '容量', '已用', '使用率'].forEach(h => {
+  ['磁盘', '挂载点', '容量', '已用', '使用率'].forEach(h => {
     const th = document.createElement('th');
     th.textContent = h;
     head.append(th);
   });
   table.append(head);
-  list.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0)).forEach(d => {
+  list.forEach((d, i) => {
     const tr = document.createElement('tr');
     const pct = Number(d.pct) || 0;
-    const cells = [d.mount, bytes(d.total), bytes(d.used), pct + '%'];
-    cells.forEach((v, i) => {
+    const cells = ['磁盘' + (i + 1), d.mount, bytes(d.total), bytes(d.used), pct + '%'];
+    cells.forEach((v, k) => {
       const td = document.createElement('td');
       td.textContent = v;
       // 与丢包率同一套配色：≥90% 标红
-      if (i === 3 && pct >= 90) td.className = 'bad';
+      if (k === 4 && pct >= 90) td.className = 'bad';
       tr.append(td);
     });
     table.append(tr);
   });
-  box.append(table);
+  tbox.append(table);
+}
+
+/* ---------- 总负载率（所有磁盘的已用合计 / 容量合计） ---------- */
+/* 值由服务端在入库时算好写进历史样本的 disk_agg，前端只负责画。
+   老样本 / 老客户端没有这个键时，退回同一条样本的 disk（根盘），曲线不会断。 */
+function renderDetailDiskAgg(data) {
+  const svg = document.querySelector('#node-detail .diskagg-svg');
+  if (!svg) return;
+  const samples = (data.history || []).map(s => Object.assign({}, s, {
+    disk_agg: (s.disk_agg === undefined || s.disk_agg === null) ? s.disk : s.disk_agg,
+  }));
+  if (!chartPlaceholder(svg, samples)) {
+    pctLines(svg, samples, [{ key: 'disk_agg', cssVar: '--load-disk', fallback: '#f59e0b' }], 80);
+  }
+  renderTimeAxis(document.querySelector('#node-detail .diskagg-xaxis'), samples);
+  const hint = $('#detail-diskagg-hint');
+  if (hint) {
+    const last = samples[samples.length - 1];
+    const v = last ? Number(last.disk_agg) : NaN;
+    hint.textContent = Number.isFinite(v) ? '当前 ' + (Math.round(v * 10) / 10) + '%' : '';
+  }
 }
 
 /* ---------- 延迟折线 + 丢包条 ---------- */

@@ -758,6 +758,29 @@ class RegressionTest(unittest.TestCase):
         for node in json.loads(raw)["nodes"]:
             self.assertNotIn("disks", node)
 
+    def test_17_aggregate_disk_pct_in_history(self):
+        key = make_key(self.base, self.admin, "agg")["key"]
+        # 两块盘：已用合计 400+2700=3100，容量合计 1000+3000=4000 → 77.5%
+        payload = {"hostname": "agg-node", "cpu": 1, "disk": 11, "disks": [
+            {"mount": "/", "total": 1000, "used": 400, "pct": 40},
+            {"mount": "/data", "total": 3000, "used": 2700, "pct": 90},
+        ]}
+        _, _, raw = http(self.base, "POST", "/api/report", payload, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        hist = json.loads(raw)["history"]
+        self.assertTrue(hist, hist)
+        # 注意不是根盘的 11%，也不是两块盘百分比的算术平均（65%）
+        self.assertEqual(hist[-1]["disk_agg"], 77.5)
+
+        # 老客户端不上报 disks → 总负载率退回根盘的 disk
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "agg-old", "cpu": 1, "disk": 33}, {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        hist = json.loads(raw)["history"]
+        self.assertEqual(hist[-1]["disk_agg"], 33.0)
+
 
 class DataFileMigrationTest(unittest.TestCase):
     """v1 容器（裸 SHA-256 密钥）必须能读，并在下一次保存时自动升级成 v2（PBKDF2）。"""
