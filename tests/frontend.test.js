@@ -220,6 +220,25 @@ test('悬停：三网区分 正常 / 超时 / 未配置，并给出该点丢包�
   assert.deepStrictEqual(plain(ctx.pingTipParts(null)), []);
 });
 
+test('悬停：负载图给 CPU / 内存 / 磁盘 三项百分比', () => {
+  const { ctx } = loadApp();
+  const parts = ctx.loadTipParts({ time: 0, cpu: 46.6, memory: 58.4, disk: 92.2 });
+  assert.deepStrictEqual(plain(parts.map(p => p.text)), ['CPU 47%', '内存 58%', '磁盘 92%']);
+  // 缺字段按 0 处理（百分比里 0 是有效值）
+  assert.deepStrictEqual(plain(ctx.loadTipParts({ time: 0 }).map(p => p.text)),
+    ['CPU 0%', '内存 0%', '磁盘 0%']);
+  assert.deepStrictEqual(plain(ctx.loadTipParts(null)), []);
+});
+
+test('悬停：总使用率图给一项，保留一位小数', () => {
+  const { ctx } = loadApp();
+  assert.strictEqual(ctx.diskAggTipParts({ time: 0, disk_agg: 71.56 })[0].text, '总使用率 71.6%');
+  assert.strictEqual(ctx.diskAggTipParts({ time: 0, disk_agg: 40 })[0].text, '总使用率 40%');
+  // 老样本没有 disk_agg（渲染侧会先用根盘 disk 兜底，这里兜不住时按 0）
+  assert.strictEqual(ctx.diskAggTipParts({ time: 0 })[0].text, '总使用率 0%');
+  assert.deepStrictEqual(plain(ctx.diskAggTipParts(null)), []);
+});
+
 /* ---------------- 丢包统计 ---------------- */
 test('lossStats: 丢包率按"失败探测数 / 总探测数"统计', () => {
   const { ctx } = loadApp();

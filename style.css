@@ -544,9 +544,9 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
 
 /* ---------- 时间轴缩放 ---------- */
 .pick { fill: var(--accent); opacity: .16; pointer-events: none; }
-/* ---------- 延迟图悬停取值 ---------- */
+/* ---------- 图表悬停取值（延迟图 / 负载图 / 文件系统总使用率图共用） ---------- */
 /* 竖指示线：追加在数据之后绘制，所以压在曲线上面；描边锁 1px 免得被横向抻粗 */
-.ping-hover {
+.chart-hover {
   stroke: var(--accent);
   stroke-width: 1;
   stroke-dasharray: 2 2;
@@ -554,7 +554,7 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
   pointer-events: none;
 }
 /* 提示气泡。注意 display:inline-flex 会盖掉 hidden 属性，得单独兜一条 */
-.ping-tip {
+.chart-tip {
   position: absolute;
   z-index: 5;
   pointer-events: none;
@@ -571,12 +571,12 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
   color: var(--text);
   transform: translateX(-50%);
 }
-.ping-tip[hidden] { display: none; }
-.ping-tip b { font-weight: 600; }
-.ping-tip i { font-style: normal; }
-.ping-tip .tip-to { color: var(--danger); }
-.ping-tip .tip-na { color: var(--muted); }
-.ping-tip .tip-loss { color: var(--muted); }
+.chart-tip[hidden] { display: none; }
+.chart-tip b { font-weight: 600; }
+.chart-tip i { font-style: normal; }
+.chart-tip .tip-to { color: var(--danger); }
+.chart-tip .tip-na { color: var(--muted); }
+.chart-tip .tip-loss { color: var(--muted); }
 .ping-legend { display: inline-flex; align-items: center; gap: 10px; }
 .ping-legend .lg {
   display: inline-block;

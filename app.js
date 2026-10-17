@@ -465,7 +465,12 @@ let _detailTimer = null;
 let _detailShownKey = null;       // 当前已渲染的 id:range:end，用来决定是否先用缓存顶一下
 let _detailView = null;           // 'detail' | 'events'：同一节点的两个页面共用一份数据
 let _pingSamples = [];            // 延迟图当前这份数据（悬停取值要用，与图表同源）
-let _hidePingHover = () => {};    // 由 wirePingInteraction() 替换；重绘时先收起悬停提示
+let _loadSamples = [];            // 负载图（CPU/内存/磁盘）当前数据
+let _aggSamples = [];             // 文件系统总使用率图当前数据
+const _chartHovers = {};          // key -> { hide }：各图在启动时把悬停控制器登记进来
+function hideChartHovers(...keys) {
+  keys.forEach(k => { const h = _chartHovers[k]; if (h) h.hide(); });
+}
 const _detailCache = new Map();
 
 function cacheKey(id, range, end) {
@@ -787,6 +792,8 @@ function renderDetailLoad(data) {
   const hint = $('#detail-load-hint');
   if (hint) hint.textContent = PING_RANGE_LABELS[_detailRange] || '';
   const loadSvg = document.querySelector('#node-detail .load-svg');
+  _loadSamples = samples;           // 悬停取值用；与图表同源
+  hideChartHovers('load');
   if (!chartPlaceholder(loadSvg, samples)) pctLines(loadSvg, samples, LOAD_SERIES, 96);
   renderTimeAxis(document.querySelector('#node-detail .load-xaxis'), samples);
 }
@@ -816,7 +823,7 @@ function renderDetailNet(n, samples) {
 function renderDetailPing(samples, n) {
   const win = pingWindow({ ping_history: samples, updated: n.updated }, _detailRange);
   _pingSamples = win;               // 悬停取值用；与图表是同一份数据
-  _hidePingHover();                 // 马上要重画了，旧提示先收起
+  hideChartHovers('ping');          // 马上要重画了，旧提示先收起
   const svg = document.querySelector('#node-detail .ping-svg');
   if (svg) {
     pingChart(svg, win, 96);
@@ -829,16 +836,6 @@ function renderDetailPing(samples, n) {
     pick.setAttribute('height', '96');
     pick.setAttribute('visibility', 'hidden');
     svg.append(pick);
-    // 悬停指示线：pingChart() 会整个重写 innerHTML，所以每次渲染都要补回来。
-    // 放在数据之后追加 → 绘制顺序在曲线之上，才看得见。
-    const hover = document.createElementNS
-      ? document.createElementNS('http://www.w3.org/2000/svg', 'line')
-      : document.createElement('line');
-    hover.setAttribute('class', 'ping-hover');
-    hover.setAttribute('y1', '0');
-    hover.setAttribute('y2', '96');
-    hover.setAttribute('visibility', 'hidden');
-    svg.append(hover);
   }
   lossChart(document.querySelector('#node-detail .loss-svg'), win, 18);
   const lv = document.querySelector('#node-detail .loss-val');
@@ -1115,6 +1112,8 @@ function renderDetailDiskAgg(data) {
   const samples = (data.history || []).map(s => Object.assign({}, s, {
     disk_agg: (s.disk_agg === undefined || s.disk_agg === null) ? s.disk : s.disk_agg,
   }));
+  _aggSamples = samples;            // 悬停取值用
+  hideChartHovers('agg');
   if (!chartPlaceholder(svg, samples)) {
     pctLines(svg, samples, [{ key: 'disk_agg', cssVar: '--load-disk', fallback: '#f59e0b' }], 80);
   }
@@ -1169,6 +1168,93 @@ function pingTipParts(sample) {
     parts.push({ cls: 'tip-loss', text: '丢包 ' + Math.round(sampleLoss(sample) * 100) + '%' });
   }
   return parts;
+}
+
+/* 负载图的三条曲线：CPU / 内存 / 磁盘，都是 0-100 的百分比 */
+const LOAD_LABELS = { cpu: 'CPU', memory: '内存', disk: '磁盘' };
+
+function loadTipParts(sample) {
+  if (!sample) return [];
+  return LOAD_SERIES.map(s => ({
+    cls: '',
+    text: LOAD_LABELS[s.key] + ' ' + Math.round(Number(sample[s.key]) || 0) + '%',
+  }));
+}
+
+/* 文件系统总使用率图只有一条曲线 */
+function diskAggTipParts(sample) {
+  if (!sample) return [];
+  const v = Number(sample.disk_agg);
+  return [{ cls: '', text: '总使用率 ' + (Number.isFinite(v) ? Math.round(v * 10) / 10 : 0) + '%' }];
+}
+
+/* ---------- 图表悬停（延迟图 / 负载图 / 总使用率图共用） ----------
+   - getSamples(): 每次现取，保证与图表当前那份数据同源；
+   - parts(sample): 气泡内容，纯函数，便于单测；
+   - enabled(): 返回 false 时暂不显示（延迟图拖拽框选期间要禁用）。
+   图表每次重绘都会重写 innerHTML，所以指示线不靠渲染侧补，而是在需要时按需重建（自愈）。 */
+function wireChartHover(cfg) {
+  const svg = cfg.svg;
+  if (!svg || !svg.addEventListener) return { hide: () => {} };
+  const body = svg.parentElement;
+  let tip = null;
+  const ensureLine = () => {
+    let l = svg.querySelector ? svg.querySelector('.chart-hover') : null;
+    if (!l) {
+      l = document.createElementNS
+        ? document.createElementNS('http://www.w3.org/2000/svg', 'line')
+        : document.createElement('line');
+      l.setAttribute('class', 'chart-hover');
+      l.setAttribute('y1', '0');
+      l.setAttribute('y2', String(cfg.height || 96));
+      svg.append(l);
+    }
+    return l;
+  };
+  const hide = () => {
+    if (tip) tip.hidden = true;
+    const l = svg.querySelector ? svg.querySelector('.chart-hover') : null;
+    if (l) l.setAttribute('visibility', 'hidden');
+  };
+  svg.addEventListener('mousemove', ev => {
+    if (cfg.enabled && !cfg.enabled()) return;
+    const samples = cfg.getSamples();
+    if (!body || !samples || !samples.length) return;
+    const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    if (!rect || !rect.width) return;
+    const idx = nearestSampleIndex(samples, (ev.clientX - rect.left) / rect.width * 600, 600);
+    if (idx < 0) return;
+    const xs = xPositions(samples, 600);
+    const l = ensureLine();
+    l.setAttribute('x1', xs[idx].toFixed(1));
+    l.setAttribute('x2', xs[idx].toFixed(1));
+    l.setAttribute('visibility', 'visible');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'chart-tip';
+      body.append(tip);
+    }
+    tip.innerHTML = '';
+    const t = document.createElement('b');
+    t.textContent = clock(samples[idx].time);
+    tip.append(t);
+    cfg.parts(samples[idx]).forEach(p => {
+      const s = document.createElement('i');
+      s.className = p.cls || '';
+      s.textContent = p.text;
+      tip.append(s);
+    });
+    tip.hidden = false;
+    // 跟随光标：用 SVG 内的真实像素定位，再夹进容器，别让提示被裁掉
+    const bodyW = body.clientWidth || 0;
+    const svgW = svg.clientWidth || 0;
+    const px = (svg.offsetLeft || 0) + (Number(xs[idx]) / 600) * svgW;
+    const half = Math.min(140, (tip.offsetWidth || 0) / 2);
+    tip.style.left = (bodyW ? Math.max(half + 4, Math.min(px, bodyW - half - 4)) : px) + 'px';
+    tip.style.top = '2px';
+  });
+  svg.addEventListener('mouseleave', hide);
+  return { hide };
 }
 
 function pingChart(svg, samples = [], height = 48) {
@@ -1468,78 +1554,37 @@ onId('#ping-left', () => shiftBy(-0.5));
 onId('#ping-right', () => shiftBy(0.5));
 onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
 
-/* 延迟图上的指针交互：悬停取值 + 拖拽框选放大 + Ctrl/⌘ 滚轮缩放。
-   三者共用同一套"光标 → SVG 横坐标"换算，也共用 startX 这个状态，
-   所以必须放在同一个闭包里 —— 否则悬停没法判断"现在正在拖拽"。 */
+/* 延迟图上的指针交互：拖拽框选放大 + Ctrl/⌘ 滚轮缩放（悬停由 wireChartHover 负责，
+   这里只通过 enabled() 让它在拖拽期间让位）。两者共用 startX 这个状态，所以放在同一闭包。 */
 (function wirePingInteraction() {
   const svg = document.querySelector('#node-detail .ping-svg');
   if (!svg) return;
-  const body = svg.parentElement;              // .chart-body（已经是 position: relative）
   let startX = null;
-  let tip = null;
   const svgX = ev => {
     const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
     if (!rect || !rect.width) return null;
     return (ev.clientX - rect.left) / rect.width * 600;
   };
-  const hoverLine = () => (svg.querySelector ? svg.querySelector('.ping-hover') : null);
-  const hideHover = () => {
-    if (tip) tip.hidden = true;
-    const l = hoverLine();
-    if (l) l.setAttribute('visibility', 'hidden');
-  };
-  _hidePingHover = hideHover;                  // 供 renderDetailPing() 在重绘前收起
-
-  const showHover = ev => {
-    const samples = _pingSamples;
-    if (!body || !samples || !samples.length) return;
-    const x = svgX(ev);
-    if (x == null) return;
-    const idx = nearestSampleIndex(samples, x, 600);
-    if (idx < 0) return;
-    const xs = xPositions(samples, 600);
-    const lx = xs[idx].toFixed(1);
-    const line = hoverLine();
-    if (line) {
-      line.setAttribute('x1', lx);
-      line.setAttribute('x2', lx);
-      line.setAttribute('visibility', 'visible');
-    }
-    if (!tip) {
-      tip = document.createElement('div');
-      tip.className = 'ping-tip';
-      body.append(tip);
-    }
-    tip.innerHTML = '';
-    const t = document.createElement('b');
-    t.textContent = clock(samples[idx].time);
-    tip.append(t);
-    pingTipParts(samples[idx]).forEach(p => {
-      const s = document.createElement('i');
-      s.className = p.cls;
-      s.textContent = p.text;
-      tip.append(s);
-    });
-    tip.hidden = false;
-    // 跟随光标：用 SVG 内的真实像素定位，再夹进容器，别让提示被裁掉
-    const bodyW = body.clientWidth || 0;
-    const svgW = svg.clientWidth || 0;
-    const px = (svg.offsetLeft || 0) + (Number(xs[idx]) / 600) * svgW;
-    const half = Math.min(140, (tip.offsetWidth || 0) / 2);
-    tip.style.left = (bodyW ? Math.max(half + 4, Math.min(px, bodyW - half - 4)) : px) + 'px';
-    tip.style.top = '2px';
-  };
+  // 拖拽期间不显示悬停气泡：enabled() 返回 false 时 wireChartHover 会直接跳过
+  const hover = wireChartHover({
+    svg,
+    height: 96,
+    getSamples: () => _pingSamples,
+    parts: pingTipParts,
+    enabled: () => startX == null,
+  });
+  _chartHovers.ping = hover;
 
   svg.addEventListener('mousedown', ev => {
     const x = svgX(ev);
     if (x == null) return;
     startX = x;
-    hideHover();
+    hover.hide();
     drawSelection(svg, x, x);
   });
   svg.addEventListener('mousemove', ev => {
-    if (startX == null) { showHover(ev); return; }   // 没在拖拽 → 显示悬停数值
-    hideHover();
+    if (startX == null) return;                      // 悬停交给 wireChartHover
+    hover.hide();
     const x = svgX(ev);
     if (x != null) drawSelection(svg, startX, x);
   });
@@ -1557,8 +1602,8 @@ onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
     applyWindow(clampWindow(t1 - t0, t1, detailExtent().oldest, detailExtent().newest));
   };
   svg.addEventListener('mouseup', finish);
+  // 移出图表：悬停提示由 wireChartHover 自己的 mouseleave 收起，这里只收尾框选
   svg.addEventListener('mouseleave', ev => {
-    hideHover();                                  // 移出图表就把提示收起来
     if (startX != null) finish(ev);
   });
   // 滚轮缩放：必须按住 Ctrl/⌘，否则会和页面滚动打架
@@ -1568,6 +1613,29 @@ onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
     const x = svgX(ev);
     zoomBy(ev.deltaY > 0 ? 2 : 0.5, x == null ? 0.5 : x / 600);
   }, { passive: false });
+})();
+
+/* 负载图与「文件系统总使用率」图的悬停：这两张没有拖拽，直接接上即可。
+   图表是页面里静态存在的，所以启动时绑一次就够。 */
+(function wireLoadHovers() {
+  const loadSvg = document.querySelector('#node-detail .load-svg');
+  if (loadSvg) {
+    _chartHovers.load = wireChartHover({
+      svg: loadSvg,
+      height: 96,
+      getSamples: () => _loadSamples,
+      parts: loadTipParts,
+    });
+  }
+  const aggSvg = document.querySelector('#node-detail .diskagg-svg');
+  if (aggSvg) {
+    _chartHovers.agg = wireChartHover({
+      svg: aggSvg,
+      height: 80,
+      getSamples: () => _aggSamples,
+      parts: diskAggTipParts,
+    });
+  }
 })();
 
 /* ---------- 管理后台 ---------- */
