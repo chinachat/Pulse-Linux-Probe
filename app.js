@@ -340,7 +340,7 @@ function createCard(n, container) {
   const win = pingWindow(n);
   const prow = e.querySelector('.ping-row');
   if (prow) {
-    const icons = { ct: '电信', cu: '联通', cm: '移动' };
+    const icons = PING_NAMES;
     const lr = {};
     ['ct', 'cu', 'cm'].forEach(k => {
       let lost = 0, total = 0;
@@ -464,6 +464,8 @@ let _detailExtent = { oldest: 0, newest: 0 };
 let _detailTimer = null;
 let _detailShownKey = null;       // 当前已渲染的 id:range:end，用来决定是否先用缓存顶一下
 let _detailView = null;           // 'detail' | 'events'：同一节点的两个页面共用一份数据
+let _pingSamples = [];            // 延迟图当前这份数据（悬停取值要用，与图表同源）
+let _hidePingHover = () => {};    // 由 wirePingInteraction() 替换；重绘时先收起悬停提示
 const _detailCache = new Map();
 
 function cacheKey(id, range, end) {
@@ -813,6 +815,8 @@ function renderDetailNet(n, samples) {
 
 function renderDetailPing(samples, n) {
   const win = pingWindow({ ping_history: samples, updated: n.updated }, _detailRange);
+  _pingSamples = win;               // 悬停取值用；与图表是同一份数据
+  _hidePingHover();                 // 马上要重画了，旧提示先收起
   const svg = document.querySelector('#node-detail .ping-svg');
   if (svg) {
     pingChart(svg, win, 96);
@@ -825,6 +829,16 @@ function renderDetailPing(samples, n) {
     pick.setAttribute('height', '96');
     pick.setAttribute('visibility', 'hidden');
     svg.append(pick);
+    // 悬停指示线：pingChart() 会整个重写 innerHTML，所以每次渲染都要补回来。
+    // 放在数据之后追加 → 绘制顺序在曲线之上，才看得见。
+    const hover = document.createElementNS
+      ? document.createElementNS('http://www.w3.org/2000/svg', 'line')
+      : document.createElement('line');
+    hover.setAttribute('class', 'ping-hover');
+    hover.setAttribute('y1', '0');
+    hover.setAttribute('y2', '96');
+    hover.setAttribute('visibility', 'hidden');
+    svg.append(hover);
   }
   lossChart(document.querySelector('#node-detail .loss-svg'), win, 18);
   const lv = document.querySelector('#node-detail .loss-val');
@@ -844,7 +858,7 @@ function renderDetailPing(samples, n) {
   const prow = $('#detail-ping-row');
   if (!prow) return;
   prow.innerHTML = '';
-  const icons = { ct: '电信', cu: '联通', cm: '移动' };
+  const icons = PING_NAMES;
   ['ct', 'cu', 'cm'].forEach(k => {
     const v = n['tcp_ping_' + k];
     if (!v) return;
@@ -1115,6 +1129,47 @@ function renderDetailDiskAgg(data) {
 
 /* ---------- 延迟折线 + 丢包条 ---------- */
 let _uid = 0;
+
+/* 三网的顺序与显示名：图表、徽章、丢包行、悬停提示共用一份 */
+const PING_CARRIERS = [['ct', '电信'], ['cu', '联通'], ['cm', '移动']];
+const PING_NAMES = Object.fromEntries(PING_CARRIERS);
+
+/* 悬停取值：按 SVG 横坐标（0..600）找最近的那个采样点。
+   采样点只有几百个，线性扫一遍就够，不必二分。 */
+function nearestSampleIndex(samples, x, w = 600) {
+  if (!samples || !samples.length) return -1;
+  const xs = xPositions(samples, w);
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const d = Math.abs(xs[i] - x);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/* 悬停提示的内容。纯函数（不碰 DOM），方便单测：
+   每个运营商给一行，再给该采样点的丢包率；全都没配置时就不提丢包。 */
+function pingTipParts(sample) {
+  if (!sample) return [];
+  const parts = [];
+  let configured = 0;
+  PING_CARRIERS.forEach(([k, name]) => {
+    const v = Number(sample[k]) || 0;
+    if (v === 0) {
+      parts.push({ cls: 'tip-na', text: name + ' 未配置' });
+    } else if (v < 0) {
+      configured += 1;
+      parts.push({ cls: 'tip-to', text: name + ' 超时' });
+    } else {
+      configured += 1;
+      parts.push({ cls: '', text: name + ' ' + Math.round(v) + 'ms' });
+    }
+  });
+  if (configured > 1) {                       // 只有一个目标时谈丢包率没意义
+    parts.push({ cls: 'tip-loss', text: '丢包 ' + Math.round(sampleLoss(sample) * 100) + '%' });
+  }
+  return parts;
+}
 
 function pingChart(svg, samples = [], height = 48) {
   const w = 600, h = height, pad = 4;
@@ -1413,24 +1468,78 @@ onId('#ping-left', () => shiftBy(-0.5));
 onId('#ping-right', () => shiftBy(0.5));
 onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
 
-/* 在图上拖拽 = 框选一段时间并放大 */
-(function wireDragSelect() {
+/* 延迟图上的指针交互：悬停取值 + 拖拽框选放大 + Ctrl/⌘ 滚轮缩放。
+   三者共用同一套"光标 → SVG 横坐标"换算，也共用 startX 这个状态，
+   所以必须放在同一个闭包里 —— 否则悬停没法判断"现在正在拖拽"。 */
+(function wirePingInteraction() {
   const svg = document.querySelector('#node-detail .ping-svg');
   if (!svg) return;
+  const body = svg.parentElement;              // .chart-body（已经是 position: relative）
   let startX = null;
+  let tip = null;
   const svgX = ev => {
     const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
     if (!rect || !rect.width) return null;
     return (ev.clientX - rect.left) / rect.width * 600;
   };
+  const hoverLine = () => (svg.querySelector ? svg.querySelector('.ping-hover') : null);
+  const hideHover = () => {
+    if (tip) tip.hidden = true;
+    const l = hoverLine();
+    if (l) l.setAttribute('visibility', 'hidden');
+  };
+  _hidePingHover = hideHover;                  // 供 renderDetailPing() 在重绘前收起
+
+  const showHover = ev => {
+    const samples = _pingSamples;
+    if (!body || !samples || !samples.length) return;
+    const x = svgX(ev);
+    if (x == null) return;
+    const idx = nearestSampleIndex(samples, x, 600);
+    if (idx < 0) return;
+    const xs = xPositions(samples, 600);
+    const lx = xs[idx].toFixed(1);
+    const line = hoverLine();
+    if (line) {
+      line.setAttribute('x1', lx);
+      line.setAttribute('x2', lx);
+      line.setAttribute('visibility', 'visible');
+    }
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'ping-tip';
+      body.append(tip);
+    }
+    tip.innerHTML = '';
+    const t = document.createElement('b');
+    t.textContent = clock(samples[idx].time);
+    tip.append(t);
+    pingTipParts(samples[idx]).forEach(p => {
+      const s = document.createElement('i');
+      s.className = p.cls;
+      s.textContent = p.text;
+      tip.append(s);
+    });
+    tip.hidden = false;
+    // 跟随光标：用 SVG 内的真实像素定位，再夹进容器，别让提示被裁掉
+    const bodyW = body.clientWidth || 0;
+    const svgW = svg.clientWidth || 0;
+    const px = (svg.offsetLeft || 0) + (Number(xs[idx]) / 600) * svgW;
+    const half = Math.min(140, (tip.offsetWidth || 0) / 2);
+    tip.style.left = (bodyW ? Math.max(half + 4, Math.min(px, bodyW - half - 4)) : px) + 'px';
+    tip.style.top = '2px';
+  };
+
   svg.addEventListener('mousedown', ev => {
     const x = svgX(ev);
     if (x == null) return;
     startX = x;
+    hideHover();
     drawSelection(svg, x, x);
   });
   svg.addEventListener('mousemove', ev => {
-    if (startX == null) return;
+    if (startX == null) { showHover(ev); return; }   // 没在拖拽 → 显示悬停数值
+    hideHover();
     const x = svgX(ev);
     if (x != null) drawSelection(svg, startX, x);
   });
@@ -1449,6 +1558,7 @@ onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
   };
   svg.addEventListener('mouseup', finish);
   svg.addEventListener('mouseleave', ev => {
+    hideHover();                                  // 移出图表就把提示收起来
     if (startX != null) finish(ev);
   });
   // 滚轮缩放：必须按住 Ctrl/⌘，否则会和页面滚动打架

@@ -182,6 +182,44 @@ test('xPositions: 单点居中', () => {
   assert.deepStrictEqual(plain(ctx.xPositions([{ time: 1 }], 600)), [300]);
 });
 
+/* ---------------- 延迟图悬停取值 ---------------- */
+test('悬停：按横坐标找最近的采样点', () => {
+  const { ctx } = loadApp();
+  const samples = [
+    { time: 0, ct: 30 }, { time: 60, ct: 31 }, { time: 120, ct: 32 },
+  ];
+  // xPositions 把这三个点放在 x = 0 / 300 / 600
+  assert.strictEqual(ctx.nearestSampleIndex(samples, 0, 600), 0);
+  assert.strictEqual(ctx.nearestSampleIndex(samples, 140, 600), 0);   // 离 0 更近
+  assert.strictEqual(ctx.nearestSampleIndex(samples, 200, 600), 1);   // 越过中点后归中间点
+  assert.strictEqual(ctx.nearestSampleIndex(samples, 480, 600), 2);
+  assert.strictEqual(ctx.nearestSampleIndex([], 100, 600), -1);
+});
+
+test('悬停：三网区分 正常 / 超时 / 未配置，并给出该点丢包率', () => {
+  const { ctx } = loadApp();
+  // ct 正常、cu 超时、cm 未配置 → 丢包率 = 1/2
+  const parts = ctx.pingTipParts({ time: 0, ct: 32, cu: -1, cm: 0 });
+  assert.deepStrictEqual(plain(parts.map(p => p.text)),
+    ['电信 32ms', '联通 超时', '移动 未配置', '丢包 50%']);
+  assert.strictEqual(parts[1].cls, 'tip-to');
+  assert.strictEqual(parts[2].cls, 'tip-na');
+
+  // 三个都没配置 → 不提丢包率（分母为 0，谈了反而误导）
+  const none = ctx.pingTipParts({ time: 0, ct: 0, cu: 0, cm: 0 });
+  assert.deepStrictEqual(plain(none.map(p => p.text)),
+    ['电信 未配置', '联通 未配置', '移动 未配置']);
+
+  // 只配了一个目标 → 也不提丢包率
+  const one = ctx.pingTipParts({ time: 0, ct: 40, cu: 0, cm: 0 });
+  assert.strictEqual(one.some(p => /丢包/.test(p.text)), false);
+
+  // 延迟四舍五入到整数毫秒
+  assert.strictEqual(ctx.pingTipParts({ time: 0, ct: 31.6, cu: 40.2, cm: 51.9 })[0].text, '电信 32ms');
+  // 空样本不炸
+  assert.deepStrictEqual(plain(ctx.pingTipParts(null)), []);
+});
+
 /* ---------------- 丢包统计 ---------------- */
 test('lossStats: 丢包率按"失败探测数 / 总探测数"统计', () => {
   const { ctx } = loadApp();
