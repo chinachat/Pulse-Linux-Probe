@@ -456,6 +456,7 @@ $('#back').onclick = () => {
 const DETAIL_POLL_MS = 5000;
 const DETAIL_DEFAULT_RANGE = 86400;
 const DETAIL_CACHE_MS = 120000;   // 缓存 2 分钟：够"来回切区间"用，又不会显示太旧的数据
+const DETAIL_CACHE_MAX = 12;      // 内存缓存条目上限：滚轮缩放会不断产生新窗口
 let _detailId = null;
 let _detailData = null;
 let _detailRange = DETAIL_DEFAULT_RANGE;
@@ -499,9 +500,19 @@ function cachePut(id, range, end, data) {
   const entry = { data, ts: Date.now() };
   const key = cacheKey(id, range, end);
   _detailCache.set(key, entry);
-  try {
-    sessionStorage.setItem('probe-detail:' + key, JSON.stringify(entry));
-  } catch (_) { /* 超配额/隐私模式：内存缓存仍然有效 */ }
+  // 滚轮缩放会不断产生新窗口，内存里留最近几条就够了
+  while (_detailCache.size > DETAIL_CACHE_MAX) {
+    const oldest = _detailCache.keys().next().value;
+    if (oldest === key) break;            // 刚写进去的就是最旧的，别把自己删了
+    _detailCache.delete(oldest);
+  }
+  // 只有预设区间才写 sessionStorage：缩放/平移出来的窗口数量没有上限，
+  // 一个节点翻几次就是几 MB，配额一满反而拖慢渲染（失败也无所谓，内存缓存还在）
+  if (end == null) {
+    try {
+      sessionStorage.setItem('probe-detail:' + key, JSON.stringify(entry));
+    } catch (_) { /* 超配额/隐私模式：内存缓存仍然有效 */ }
+  }
 }
 
 function ago(ts) {
@@ -825,18 +836,7 @@ function renderDetailPing(samples, n) {
   _pingSamples = win;               // 悬停取值用；与图表是同一份数据
   hideChartHovers('ping');          // 马上要重画了，旧提示先收起
   const svg = document.querySelector('#node-detail .ping-svg');
-  if (svg) {
-    pingChart(svg, win, 96);
-    // 框选放大的叠加层；曲线每次重画都要补回来
-    const pick = document.createElementNS
-      ? document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      : document.createElement('rect');
-    pick.setAttribute('class', 'pick');
-    pick.setAttribute('y', '0');
-    pick.setAttribute('height', '96');
-    pick.setAttribute('visibility', 'hidden');
-    svg.append(pick);
-  }
+  if (svg) pingChart(svg, win, 96);
   lossChart(document.querySelector('#node-detail .loss-svg'), win, 18);
   const lv = document.querySelector('#node-detail .loss-val');
   if (lv) {
@@ -1190,8 +1190,7 @@ function diskAggTipParts(sample) {
 
 /* ---------- 图表悬停（延迟图 / 负载图 / 总使用率图共用） ----------
    - getSamples(): 每次现取，保证与图表当前那份数据同源；
-   - parts(sample): 气泡内容，纯函数，便于单测；
-   - enabled(): 返回 false 时暂不显示（延迟图拖拽框选期间要禁用）。
+   - parts(sample): 气泡内容，纯函数，便于单测。
    图表每次重绘都会重写 innerHTML，所以指示线不靠渲染侧补，而是在需要时按需重建（自愈）。 */
 function wireChartHover(cfg) {
   const svg = cfg.svg;
@@ -1217,7 +1216,6 @@ function wireChartHover(cfg) {
     if (l) l.setAttribute('visibility', 'hidden');
   };
   svg.addEventListener('mousemove', ev => {
-    if (cfg.enabled && !cfg.enabled()) return;
     const samples = cfg.getSamples();
     if (!body || !samples || !samples.length) return;
     const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
@@ -1435,15 +1433,6 @@ function renderTimeAxis(box, samples) {
   });
 }
 
-// 画框选区域（拖拽时显示），用叠加层而不是重画曲线
-function drawSelection(svg, x0, x1) {
-  const rect = svg.querySelector('.pick');
-  if (!rect) return;
-  rect.setAttribute('x', Math.min(x0, x1).toFixed(1));
-  rect.setAttribute('width', Math.abs(x1 - x0).toFixed(1));
-  rect.setAttribute('visibility', Math.abs(x1 - x0) < 2 ? 'hidden' : 'visible');
-}
-
 /* ---------- 时间窗口计算（纯函数，便于单测） ---------- */
 const PING_MIN_RANGE = 300;
 const PING_MAX_RANGE = 86400;
@@ -1554,68 +1543,64 @@ onId('#ping-left', () => shiftBy(-0.5));
 onId('#ping-right', () => shiftBy(0.5));
 onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
 
-/* 延迟图上的指针交互：拖拽框选放大 + Ctrl/⌘ 滚轮缩放（悬停由 wireChartHover 负责，
-   这里只通过 enabled() 让它在拖拽期间让位）。两者共用 startX 这个状态，所以放在同一闭包。 */
-(function wirePingInteraction() {
-  const svg = document.querySelector('#node-detail .ping-svg');
-  if (!svg) return;
-  let startX = null;
-  const svgX = ev => {
+/* ---------- 滚轮缩放（拖拽框选已去掉：手一抖就框出个奇怪窗口，滚轮更好控制） ---------- */
+
+/* deltaY → 缩放倍率（<1 放大，>1 缩小）。一格鼠标滚轮是 100，约合 1.32 倍；
+   触控板一次只有几到几十，所以按比例折算。deltaMode 1/2 分别是“行”“页”，
+   先换回像素量级，再统一夹到 ±160，免得一次甩出十倍差。 */
+function wheelZoomFactor(deltaY, deltaMode) {
+  let d = Number(deltaY) || 0;
+  if (deltaMode === 1) d *= 16;
+  else if (deltaMode === 2) d *= 300;
+  d = Math.min(Math.max(d, -160), 160);
+  return Math.pow(2, d * 0.004);
+}
+
+/* 三张动态图共用同一个时间窗口，所以在哪张图上滚，缩的都是同一段区间。
+   - 指针停在图上就接管滚轮（preventDefault），否则页面会跟着滚；
+   - Ctrl/⌘ + 滚轮不接管，留给浏览器缩放页面；
+   - 第一格立刻缩一次，之后 120ms 内的滚轮事件合并成一次请求，免得连发接口。 */
+function wireWheelZoom(svg) {
+  if (!svg || !svg.addEventListener) return;
+  let factor = 1, focus = 0.5, timer = null;
+  const ratioAt = ev => {
     const rect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
     if (!rect || !rect.width) return null;
-    return (ev.clientX - rect.left) / rect.width * 600;
+    return (ev.clientX - rect.left) / rect.width;
   };
-  // 拖拽期间不显示悬停气泡：enabled() 返回 false 时 wireChartHover 会直接跳过
-  const hover = wireChartHover({
+  const flush = () => {
+    timer = null;
+    const f = factor;
+    factor = 1;
+    if (Math.abs(f - 1) < 0.005) return;     // 攒了半天等于没动，就别刷新了
+    zoomBy(f, focus);
+  };
+  svg.addEventListener('wheel', ev => {
+    if (ev.ctrlKey || ev.metaKey) return;
+    ev.preventDefault();
+    const r = ratioAt(ev);
+    if (r != null) focus = Math.min(Math.max(r, 0), 1);
+    factor *= wheelZoomFactor(ev.deltaY, ev.deltaMode);
+    if (timer) return;                       // 这批还在合并，等定时器收尾
+    flush();                                 // 第一格立刻响应
+    timer = setTimeout(flush, 120);
+  }, { passive: false });
+}
+
+/* 延迟图：悬停 + 滚轮缩放 */
+(function wirePingHover() {
+  const svg = document.querySelector('#node-detail .ping-svg');
+  if (!svg) return;
+  _chartHovers.ping = wireChartHover({
     svg,
     height: 96,
     getSamples: () => _pingSamples,
     parts: pingTipParts,
-    enabled: () => startX == null,
   });
-  _chartHovers.ping = hover;
-
-  svg.addEventListener('mousedown', ev => {
-    const x = svgX(ev);
-    if (x == null) return;
-    startX = x;
-    hover.hide();
-    drawSelection(svg, x, x);
-  });
-  svg.addEventListener('mousemove', ev => {
-    if (startX == null) return;                      // 悬停交给 wireChartHover
-    hover.hide();
-    const x = svgX(ev);
-    if (x != null) drawSelection(svg, startX, x);
-  });
-  const finish = ev => {
-    if (startX == null) return;
-    const endX = svgX(ev);
-    const from = startX;
-    startX = null;
-    drawSelection(svg, 0, 0);
-    if (endX == null || Math.abs(endX - from) < 8) return;   // 太窄当误触
-    const cur = currentWindow();
-    const since = cur.end - cur.range;
-    const t0 = since + Math.min(from, endX) / 600 * cur.range;
-    const t1 = since + Math.max(from, endX) / 600 * cur.range;
-    applyWindow(clampWindow(t1 - t0, t1, detailExtent().oldest, detailExtent().newest));
-  };
-  svg.addEventListener('mouseup', finish);
-  // 移出图表：悬停提示由 wireChartHover 自己的 mouseleave 收起，这里只收尾框选
-  svg.addEventListener('mouseleave', ev => {
-    if (startX != null) finish(ev);
-  });
-  // 滚轮缩放：必须按住 Ctrl/⌘，否则会和页面滚动打架
-  svg.addEventListener('wheel', ev => {
-    if (!ev.ctrlKey && !ev.metaKey) return;
-    ev.preventDefault();
-    const x = svgX(ev);
-    zoomBy(ev.deltaY > 0 ? 2 : 0.5, x == null ? 0.5 : x / 600);
-  }, { passive: false });
+  wireWheelZoom(svg);
 })();
 
-/* 负载图与「文件系统总使用率」图的悬停：这两张没有拖拽，直接接上即可。
+/* 负载图与「文件系统总使用率」图：悬停 + 滚轮缩放。
    图表是页面里静态存在的，所以启动时绑一次就够。 */
 (function wireLoadHovers() {
   const loadSvg = document.querySelector('#node-detail .load-svg');
@@ -1626,6 +1611,7 @@ onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
       getSamples: () => _loadSamples,
       parts: loadTipParts,
     });
+    wireWheelZoom(loadSvg);
   }
   const aggSvg = document.querySelector('#node-detail .diskagg-svg');
   if (aggSvg) {
@@ -1635,6 +1621,7 @@ onId('#ping-reset', () => setWindow(_detailRange, null));   // 回到"最新"
       getSamples: () => _aggSamples,
       parts: diskAggTipParts,
     });
+    wireWheelZoom(aggSvg);
   }
 })();
 

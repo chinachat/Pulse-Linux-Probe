@@ -542,8 +542,6 @@ main { max-width: 1320px; margin: auto; padding: 36px clamp(16px, 5vw, 72px) 60p
   opacity: .85;
 }
 
-/* ---------- 时间轴缩放 ---------- */
-.pick { fill: var(--accent); opacity: .16; pointer-events: none; }
 /* ---------- 图表悬停取值（延迟图 / 负载图 / 文件系统总使用率图共用） ---------- */
 /* 竖指示线：追加在数据之后绘制，所以压在曲线上面；描边锁 1px 免得被横向抻粗 */
 .chart-hover {

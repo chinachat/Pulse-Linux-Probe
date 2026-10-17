@@ -715,6 +715,34 @@ test('时间轴：panWindow 平移且不越界', () => {
   assert.strictEqual(ctx.panWindow(3600, 50000, 999999, oldest, newest).end, newest);
 });
 
+test('滚轮缩放：deltaY 折算成倍率，幅度夹住', () => {
+  const { ctx } = loadApp();
+  const f = ctx.wheelZoomFactor;
+  // 没滚就不缩
+  assert.strictEqual(f(0), 1);
+  assert.strictEqual(f(undefined), 1);
+  // 往下滚是缩小（>1），往上滚是放大（<1），两个方向互为倒数
+  assert.ok(f(100) > 1, '往下滚应缩小');
+  assert.ok(f(-100) < 1, '往上滚应放大');
+  assert.ok(Math.abs(f(100) * f(-100) - 1) < 1e-9, '两个方向应互为倒数');
+  // 一格滚轮（100）约 1.32 倍，不会一步到底
+  assert.ok(Math.abs(f(100) - 1.32) < 0.02);
+  // 超出一格很多的 deltaY 夹在 ±160 折算（触控板惯性滚动不至于一下缩到最小）
+  assert.strictEqual(f(99999), f(160));
+  assert.strictEqual(f(-99999), f(-160));
+  // deltaMode 1=行、2=页，换算成像素量级后再折算
+  assert.strictEqual(f(3, 1), f(48));
+  assert.strictEqual(f(10, 2), f(160));
+  assert.strictEqual(f(100, 0), f(100));
+});
+
+test('详情缓存：条目有上限，缩放出的窗口不会无限堆积', () => {
+  const { ctx } = loadApp();
+  for (let i = 0; i < 30; i++) ctx.cachePut('n1', 600 + i, 5000 + i, { tag: i });
+  assert.deepStrictEqual(ctx.cacheGet('n1', 629, 5029), { tag: 29 }, '最近一条应还在');
+  assert.strictEqual(ctx.cacheGet('n1', 600, 5000), null, '最早的应已被淘汰');
+});
+
 test('丢包条：超时算丢包，未配置的目标不计入分母', () => {
   const { ctx, el } = loadApp();
   const now = 1_700_000_000;
