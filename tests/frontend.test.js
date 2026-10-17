@@ -840,21 +840,29 @@ test('详情页：摘要行是硬件磁盘（含 LVM/RAID 角色），表格只�
   assert.strictEqual(rows[1].childNodes[3]._class, 'bad');    // 95% 标红
 });
 
-test('详情页：没有 lsblk 数据时退回文件系统视图，并标注出来', async () => {
-  const { ctx, registry, sandbox } = loadApp();
-  withFetch(ctx, sandbox, detailPayload({
-    disks: [
-      { mount: '/', total: 1e11, used: 4e10, pct: 40 },
-      { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
-    ],
-  }));
-  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, ctx);
+test('详情页：没有块设备数据时退回文件系统视图，并区分两种原因', async () => {
+  const disks = [
+    { mount: '/', total: 1e11, used: 4e10, pct: 40 },
+    { mount: '/data', total: 1e12, used: 9.5e11, pct: 95 },
+  ];
+  // 老客户端：上报里压根没有 hdisks 键 → 提示"去节点上重跑安装命令"（用户自己能修）
+  const a = loadApp();
+  withFetch(a.ctx, a.sandbox, detailPayload({ disks, hdisks_reported: false }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, a.ctx);
   await flush();
-  const chips = registry['#detail-disks'].childNodes;
+  const chips = a.registry['#detail-disks'].childNodes;
   assert.strictEqual(chips.length, 2);
   assert.strictEqual(chips[0].childNodes[0].textContent, '文件系统1');
   assert.match(chips[0].childNodes[1].textContent, /^\/ · /);
-  assert.match(registry['#detail-disks-hint'].textContent, /lsblk/);
+  assert.match(a.registry['#detail-disks-hint'].textContent, /客户端较旧/);
+  assert.match(a.registry['#detail-disks-hint'].textContent, /重跑安装命令/);
+
+  // 新客户端但系统没装 lsblk：hdisks 是空数组 → 提示系统缺 lsblk（用户改不了）
+  const b = loadApp();
+  withFetch(b.ctx, b.sandbox, detailPayload({ disks, hdisks_reported: true }));
+  vm.runInContext(`location.hash = '#/node/${NODE_ID}'; route();`, b.ctx);
+  await flush();
+  assert.match(b.registry['#detail-disks-hint'].textContent, /缺少 lsblk/);
 });
 
 test('详情页：总负载率曲线用 disk_agg；老样本退回根盘 disk', async () => {

@@ -876,6 +876,19 @@ class RegressionTest(unittest.TestCase):
         node = json.loads(raw)["node"]
         self.assertEqual(node["hardware_disks"], [])
         self.assertEqual(len(node["disks"]), 1)   # 文件系统视图仍在
+        # 老客户端的上报里没有 hdisks 这个键 → 前端据此提示"去重装客户端"
+        self.assertFalse(node["hdisks_reported"])
+
+        # 新客户端即使系统没有 lsblk 也会发一个空数组 → 与"老客户端"区分开
+        _, _, raw = http(self.base, "POST", "/api/report",
+                         {"hostname": "nolsblk2", "cpu": 1, "hdisks": [],
+                          "disks": [{"mount": "/", "total": 100, "used": 50, "pct": 50}]},
+                         {"X-API-Key": key})
+        node_id = json.loads(raw)["id"]
+        _, _, raw = http(self.base, "GET", f"/api/nodes/{node_id}?range=3600")
+        node = json.loads(raw)["node"]
+        self.assertTrue(node["hdisks_reported"])
+        self.assertEqual(node["hardware_disks"], [])
 
 
 class DataFileMigrationTest(unittest.TestCase):

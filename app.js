@@ -1053,7 +1053,13 @@ function renderDetailDisks(data) {
         chip.append(name, val);
         box.append(chip);
       });
-      if (hint) hint.textContent = '未取到块设备信息（lsblk 不可用或客户端较旧），此处按文件系统显示';
+      if (hint) {
+        // 区分"客户端旧"和"这台机器没有 lsblk"：前者用户自己能修（重跑安装命令），
+        // 后者修不了。老记录里没有这个标记，按"客户端旧"提示（更常见也更可操作）。
+        hint.textContent = n.hdisks_reported === true
+          ? '系统缺少 lsblk · 此处按文件系统显示'
+          : '客户端较旧 · 在节点上重跑安装命令即可采集硬件磁盘';
+      }
     }
   }
 

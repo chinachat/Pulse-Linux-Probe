@@ -474,6 +474,9 @@ def sanitize_report(body):
     clean["ifaces"] = sanitize_ifaces(body.get("ifaces"))
     clean["disks"] = sanitize_disks(body.get("disks"))
     clean["hdisks"] = sanitize_hdisks(body.get("hdisks"))
+    # 老客户端的上报里根本没有 hdisks 这个键；新客户端即使系统没有 lsblk 也会发一个空数组。
+    # 记住这个区别，前端才能给出对症的提示："去节点上重跑安装命令" 还是 "这台机器没装 lsblk"。
+    clean["hdisks_reported"] = "hdisks" in body
     return clean
 
 def prune_sessions():
